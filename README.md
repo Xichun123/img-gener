@@ -144,7 +144,7 @@ SKIP_BANANA_NSFW=0 python3 scripts/sync_prompt_assets.py
 基础步骤：
 
 ```bash
-git clone https://github.com/YOUR_NAME/img-gener.git /opt/img-gener
+git clone https://github.com/Xichun123/img-gener.git /opt/img-gener
 cd /opt/img-gener
 cp .env.example .env
 cp keys.example.json keys.json

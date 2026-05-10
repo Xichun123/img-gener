@@ -1,0 +1,15 @@
+img-gener.example.com {
+	encode zstd gzip
+
+	request_body {
+		max_size 500MB
+	}
+
+	reverse_proxy 127.0.0.1:5173 {
+		flush_interval -1
+		transport http {
+			response_header_timeout 11m
+			dial_timeout 10s
+		}
+	}
+}

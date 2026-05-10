@@ -1,0 +1,168 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Img Gener</title>
+  <link rel="icon" href="favicon.ico" sizes="any">
+  <link rel="icon" type="image/png" href="favicon.png">
+  <link rel="apple-touch-icon" href="apple-touch-icon.png">
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <main class="app-shell">
+    <section class="hero">
+      <div>
+        <h1>Img Gener</h1>
+      </div>
+      <div class="status-card">
+        <span class="status-dot"></span>
+        <div>
+          <strong>本地模式</strong>
+          <small>生成结果仅在当前页面预览</small>
+        </div>
+      </div>
+    </section>
+
+    <section class="grid">
+      <form id="generateForm" class="panel form-panel">
+        <div class="panel-heading">
+          <h2>生成设置</h2>
+          <button type="button" id="resetBtn" class="ghost-btn">重置</button>
+        </div>
+
+        <label>
+          Key
+          <input id="siteKey" type="password" value="" autocomplete="off" placeholder="输入 key">
+          <small id="keyStatus" class="field-note">请输入你分配的 key。</small>
+        </label>
+
+        <label>
+          模式
+          <select id="mode">
+            <option value="generate">文生图</option>
+            <option value="edit">图生图 / 图片编辑</option>
+          </select>
+        </label>
+
+        <div class="field">
+          <span>模型</span>
+          <div id="modelChoices" class="model-choices">
+            <label class="check-card">
+              <input type="checkbox" name="models" value="gpt-image-2" checked>
+              <span>gpt-image-2</span>
+            </label>
+            <label class="check-card">
+              <input type="checkbox" name="models" value="gemini-3-pro-image-preview">
+              <span>gemini-3-pro-image-preview</span>
+            </label>
+            <label class="check-card">
+              <input type="checkbox" name="models" value="gemini-3.1-flash-image-preview">
+              <span>gemini-3.1-flash-image-preview</span>
+            </label>
+          </div>
+          <small id="modelHint" class="field-note">可同时选择多个模型；单次最多 6 张。</small>
+        </div>
+
+        <div class="two-col">
+          <label>
+            尺寸
+            <select id="size">
+              <option value="1024x1024">1024×1024 正方</option>
+              <option value="1024x1536">1024×1536 竖图</option>
+              <option value="1536x1024">1536×1024 横图</option>
+              <option value="1792x1024">1792×1024 宽屏</option>
+              <option value="1024x1792">1024×1792 长竖图</option>
+              <option value="2048x2048">2048×2048 高清方图</option>
+              <option value="2048x3072">2048×3072 高清竖图</option>
+              <option value="3072x2048">3072×2048 高清横图</option>
+              <option value="3840x2160">3840×2160 4K 横图</option>
+              <option value="2160x3840">2160×3840 4K 竖图</option>
+              <option value="auto">auto 自动</option>
+            </select>
+          </label>
+
+          <label>
+            质量
+            <select id="quality">
+              <option value="low">low 快速测试</option>
+              <option value="medium">medium</option>
+              <option value="high">high</option>
+              <option value="auto">auto</option>
+            </select>
+          </label>
+        </div>
+
+        <div class="two-col">
+          <label>
+            输出格式
+            <select id="outputFormat">
+              <option value="png">png</option>
+              <option value="jpeg">jpeg</option>
+              <option value="webp">webp</option>
+            </select>
+          </label>
+
+          <label>
+            每个模型张数
+            <select id="imageCount">
+              <option value="1">1 张</option>
+              <option value="2">2 张</option>
+              <option value="3">3 张</option>
+              <option value="4">4 张</option>
+            </select>
+          </label>
+        </div>
+
+        <label>
+          提示词
+          <div id="promptTemplatePanel" class="template-panel hidden">
+            <div class="template-row">
+              <select id="promptTemplate" aria-label="提示词模板">
+                <option value="">选择提示词模板</option>
+              </select>
+              <button type="button" id="useTemplateBtn" class="ghost-btn">填入模板</button>
+              <button type="button" id="appendTemplateBtn" class="ghost-btn">追加</button>
+            </div>
+            <small id="templatePreview" class="field-note"></small>
+          </div>
+          <a class="gallery-link ghost-btn" href="gallery.html">打开效果图图库</a>
+          <textarea id="prompt" rows="8" placeholder="描述你想生成的图片，例如：赛博朋克风格的猫，站在雨夜霓虹街道上。" required></textarea>
+        </label>
+
+        <label id="imageUploadLabel" class="hidden">
+          上传图片
+          <input id="sourceImage" type="file" accept="image/png,image/jpeg,image/webp">
+          <small id="imageHint" class="field-note">支持 PNG / JPEG / WebP，图片会发送到后端进行编辑。</small>
+          <small id="editSourceInfo" class="field-note hidden"></small>
+        </label>
+
+        <div class="actions">
+          <button id="generateBtn" class="primary-btn" type="submit">开始生成</button>
+          <span id="formHint" class="hint">多模型或多张会按成功图片数扣次数。</span>
+        </div>
+      </form>
+
+      <section class="panel preview-panel">
+        <div class="panel-heading">
+          <h2>生成结果</h2>
+          <span id="requestState" class="pill">等待生成</span>
+        </div>
+        <div id="previewBox" class="preview-box empty">
+          <div>
+            <strong>还没有图片</strong>
+            <p>填写提示词后点击“开始生成”。</p>
+          </div>
+        </div>
+        <div id="metaBox" class="meta-box hidden"></div>
+        <div class="review-actions">
+          <a id="downloadBtn" class="ghost-btn disabled" href="#" download>下载第一张</a>
+        </div>
+      </section>
+    </section>
+  </main>
+
+  <script src="prompt-templates.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>

@@ -1,0 +1,9 @@
+{
+  "scripts": {
+    "start": "python3 server.py",
+    "keys": "python3 scripts/key_manager.py",
+    "sync:prompts": "python3 scripts/sync_prompt_assets.py"
+  },
+  "dependencies": {},
+  "devDependencies": {}
+}

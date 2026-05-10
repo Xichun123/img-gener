@@ -1,0 +1,7 @@
+{
+  "demo-key": {
+    "limit": 10,
+    "used": 0,
+    "enabled": true
+  }
+}

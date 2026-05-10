@@ -1,0 +1,10 @@
+[Unit]
+Description=Daily Img Gener prompt gallery sync
+
+[Timer]
+OnCalendar=*-*-* 04:20:00
+RandomizedDelaySec=1800
+Persistent=true
+
+[Install]
+WantedBy=timers.target

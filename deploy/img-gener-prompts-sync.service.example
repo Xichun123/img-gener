@@ -1,0 +1,10 @@
+[Unit]
+Description=Sync Img Gener prompt gallery assets
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=/opt/img-gener
+EnvironmentFile=/opt/img-gener/.env
+ExecStart=/usr/bin/python3 /opt/img-gener/scripts/sync_prompt_assets.py

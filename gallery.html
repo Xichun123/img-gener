@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>效果图图库 · Img Gener</title>
+  <link rel="icon" href="favicon.ico" sizes="any">
+  <link rel="icon" type="image/png" href="favicon.png">
+  <link rel="apple-touch-icon" href="apple-touch-icon.png">
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <main class="app-shell gallery-shell">
+    <section class="hero gallery-hero">
+      <div>
+        <h1>效果图图库</h1>
+        <p class="gallery-subtitle">点击任意效果图，会自动填入对应提示词并返回生成页。</p>
+      </div>
+      <a class="ghost-btn" href="index.html">返回生成页</a>
+    </section>
+
+    <section class="panel gallery-panel">
+      <div id="caseGallery" class="gallery-page-grid" aria-label="效果图图库"></div>
+    </section>
+  </main>
+
+  <script src="prompt-cases.js"></script>
+  <script src="prompt-gallery.js"></script>
+</body>
+</html>

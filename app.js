@@ -12,6 +12,7 @@ const imageCountInput = document.querySelector('#imageCount');
 const promptInput = document.querySelector('#prompt');
 const promptTemplatePanel = document.querySelector('#promptTemplatePanel');
 const promptTemplateInput = document.querySelector('#promptTemplate');
+const promptTemplateFilter = document.querySelector('#promptTemplateFilter');
 const templatePreview = document.querySelector('#templatePreview');
 const useTemplateBtn = document.querySelector('#useTemplateBtn');
 const appendTemplateBtn = document.querySelector('#appendTemplateBtn');
@@ -26,8 +27,8 @@ const metaBox = document.querySelector('#metaBox');
 const downloadBtn = document.querySelector('#downloadBtn');
 
 const MAX_TOTAL_IMAGES = 6;
-const API_BASE = window.location.protocol === 'file:' ? 'http://127.0.0.1:5173' : '';
 let currentImages = [];
+let promptTemplates = [];
 let inlineEditSource = null;
 let generationTimer = null;
 let generationStartedAt = 0;
@@ -55,7 +56,7 @@ const modelProfiles = {
 updateModelProfile();
 refreshKeyStatus();
 updateMode();
-initPromptTemplates();
+loadPromptTemplates();
 applyPendingGalleryPrompt();
 
 form.addEventListener('submit', async (event) => {
@@ -88,6 +89,7 @@ sourceImageInput.addEventListener('change', () => {
   if (sourceImageInput.files?.[0]) clearInlineEditSource();
 });
 promptTemplateInput?.addEventListener('change', updateTemplatePreview);
+promptTemplateFilter?.addEventListener('input', filterPromptTemplates);
 useTemplateBtn?.addEventListener('click', () => applyPromptTemplate('replace'));
 appendTemplateBtn?.addEventListener('click', () => applyPromptTemplate('append'));
 
@@ -145,7 +147,7 @@ async function generateImage() {
       requestBody.image = imagePayload;
     }
 
-    const response = await fetch(apiPath(mode === 'edit' ? '/api/edit' : '/api/generate'), {
+    const response = await fetch(mode === 'edit' ? '/api/edit' : '/api/generate', {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -271,17 +273,33 @@ function setState(text, mode = '') {
   requestState.className = `pill ${mode}`.trim();
 }
 
-function initPromptTemplates() {
-  const templates = Array.isArray(window.PROMPT_TEMPLATES) ? window.PROMPT_TEMPLATES : [];
-  if (!promptTemplatePanel || !promptTemplateInput || !templates.length) return;
+async function loadPromptTemplates() {
+  if (!promptTemplatePanel || !promptTemplateInput) return;
+  try {
+    const response = await fetch('/prompt-templates.json');
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    const payload = await response.json();
+    promptTemplates = Array.isArray(payload?.templates) ? payload.templates : [];
+  } catch (error) {
+    promptTemplates = [];
+    if (templatePreview) templatePreview.textContent = `提示词模板加载失败：${error.message}`;
+    return;
+  }
+  renderPromptTemplateOptions(promptTemplates);
+  promptTemplatePanel.classList.remove('hidden');
+  updateTemplatePreview();
+}
 
+function renderPromptTemplateOptions(templates) {
+  while (promptTemplateInput.options.length > 1) {
+    promptTemplateInput.remove(1);
+  }
   const categories = new Map();
   for (const template of templates) {
     const category = template.category || '其他';
     if (!categories.has(category)) categories.set(category, []);
     categories.get(category).push(template);
   }
-
   for (const [category, items] of categories) {
     const group = document.createElement('optgroup');
     group.label = category;
@@ -289,20 +307,43 @@ function initPromptTemplates() {
       const option = document.createElement('option');
       option.value = template.id;
       option.textContent = `${template.title}${template.kind === 'json' ? ' · JSON' : ''}`;
+      option.dataset.haystack = `${template.title}\n${template.category || ''}\n${template.prompt}`.toLowerCase();
       group.appendChild(option);
     }
     promptTemplateInput.appendChild(group);
   }
+}
 
-  promptTemplatePanel.classList.remove('hidden');
-  updateTemplatePreview();
+function filterPromptTemplates() {
+  const query = (promptTemplateFilter?.value || '').trim().toLowerCase();
+  const groups = promptTemplateInput.querySelectorAll('optgroup');
+  let firstVisibleId = '';
+  for (const group of groups) {
+    let groupVisible = false;
+    for (const option of group.children) {
+      const matches = !query || (option.dataset.haystack || '').includes(query);
+      option.hidden = !matches;
+      option.disabled = !matches;
+      if (matches) {
+        groupVisible = true;
+        if (!firstVisibleId) firstVisibleId = option.value;
+      }
+    }
+    group.hidden = !groupVisible;
+  }
+  const current = promptTemplateInput.value;
+  const currentVisible = current && Array.from(promptTemplateInput.options).some((opt) => opt.value === current && !opt.hidden);
+  if (!currentVisible) {
+    promptTemplateInput.value = query ? firstVisibleId : '';
+    updateTemplatePreview();
+  }
 }
 
 function updateTemplatePreview() {
   if (!templatePreview) return;
   const template = getSelectedTemplate();
   if (!template) {
-    const count = Array.isArray(window.PROMPT_TEMPLATES) ? window.PROMPT_TEMPLATES.length : 0;
+    const count = promptTemplates.length;
     templatePreview.textContent = count ? `内置 ${count} 个提示词模板，可直接填入后修改方括号内容。` : '';
     return;
   }
@@ -326,8 +367,7 @@ function applyPromptTemplate(mode) {
 }
 
 function getSelectedTemplate() {
-  const templates = Array.isArray(window.PROMPT_TEMPLATES) ? window.PROMPT_TEMPLATES : [];
-  return templates.find((template) => template.id === promptTemplateInput?.value) || null;
+  return promptTemplates.find((template) => template.id === promptTemplateInput?.value) || null;
 }
 
 function applyPendingGalleryPrompt() {
@@ -447,7 +487,11 @@ async function refreshKeyStatus() {
   }
 
   try {
-    const response = await fetch(apiPath(`/api/key-status?siteKey=${encodeURIComponent(siteKey)}`));
+    const response = await fetch('/api/key-status', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ siteKey }),
+    });
     const payload = await response.json();
     if (!response.ok) throw new Error(payload.error || '查询失败');
     updateKeyStatus(payload);
@@ -498,10 +542,6 @@ function parseJson(text) {
 
 function extractError(payload) {
   return payload?.error?.message || payload?.error || payload?.message || payload?.raw;
-}
-
-function apiPath(path) {
-  return `${API_BASE}${path}`;
 }
 
 function buildFileName(item) {

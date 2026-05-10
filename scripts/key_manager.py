@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import json
+import os
 import secrets
 from datetime import datetime, timezone
 from pathlib import Path
@@ -164,7 +165,10 @@ def load_keys():
 
 
 def save_keys(keys):
-    KEYS_FILE.write_text(json.dumps(keys, ensure_ascii=False, indent=2) + '\n', encoding='utf-8')
+    payload = json.dumps(keys, ensure_ascii=False, indent=2) + '\n'
+    tmp = KEYS_FILE.with_suffix(KEYS_FILE.suffix + '.tmp')
+    tmp.write_text(payload, encoding='utf-8')
+    os.replace(tmp, KEYS_FILE)
 
 
 def now_iso():

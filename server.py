@@ -6,6 +6,7 @@ import json
 import mimetypes
 import os
 import pathlib
+import threading
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -20,8 +21,8 @@ PUBLIC_FILES = {
     "/styles.css",
     "/app.js",
     "/prompt-gallery.js",
-    "/prompt-templates.js",
-    "/prompt-cases.js",
+    "/prompt-templates.json",
+    "/prompt-cases.json",
     "/favicon.ico",
     "/favicon.png",
     "/apple-touch-icon.png",
@@ -77,35 +78,67 @@ UPSTREAM_API_KEY = os.environ.get("UPSTREAM_API_KEY")
 UPSTREAM_TIMEOUT = int(os.environ.get("UPSTREAM_TIMEOUT", "600"))
 
 
+def _split_env_set(name):
+    raw = os.environ.get(name, "")
+    return {item.strip() for item in raw.split(",") if item.strip()}
+
+
+ALLOWED_HOSTS = _split_env_set("ALLOWED_HOSTS") | {
+    f"127.0.0.1:{PORT}",
+    f"localhost:{PORT}",
+    f"[::1]:{PORT}",
+}
+ALLOWED_ORIGINS = _split_env_set("ALLOWED_ORIGINS")
+_KEYS_LOCK = threading.Lock()
+
+
 class Handler(http.server.BaseHTTPRequestHandler):
     server_version = "ImageKeyProxy/1.0"
 
+    def _check_host(self):
+        host = self.headers.get("Host", "")
+        if host in ALLOWED_HOSTS:
+            return True
+        self.send_text(403, "Forbidden host")
+        return False
+
     def do_GET(self):
+        if not self._check_host():
+            return
         parsed = urllib.parse.urlparse(self.path)
-        if parsed.path == "/api/key-status":
-            self.handle_key_status(parsed)
+        if parsed.path.startswith("/api/"):
+            self.send_json(405, {"error": "Method not allowed"})
             return
         self.serve_static(parsed.path)
 
     def do_HEAD(self):
+        if not self._check_host():
+            return
         parsed = urllib.parse.urlparse(self.path)
         self.serve_static(parsed.path, head_only=True)
 
     def do_OPTIONS(self):
+        if not self._check_host():
+            return
         self.send_response(204)
-        self.send_cors_headers()
-        self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
-        self.send_header("Access-Control-Allow-Headers", "Content-Type, Authorization")
-        self.send_header("Access-Control-Max-Age", "86400")
+        if self.send_cors_headers():
+            self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+            self.send_header("Access-Control-Allow-Headers", "Content-Type, Authorization")
+            self.send_header("Access-Control-Max-Age", "86400")
         self.end_headers()
 
     def do_POST(self):
+        if not self._check_host():
+            return
         parsed = urllib.parse.urlparse(self.path)
         if parsed.path == "/api/generate":
             self.handle_image_request("/v1/images/generations")
             return
         if parsed.path == "/api/edit":
             self.handle_image_request("/v1/images/edits")
+            return
+        if parsed.path == "/api/key-status":
+            self.handle_key_status()
             return
         self.send_json(404, {"error": "Not found"})
 
@@ -156,19 +189,9 @@ class Handler(http.server.BaseHTTPRequestHandler):
             self.send_json(400, {"error": "请上传图片。"})
             return
 
-        keys = load_keys()
-        key_record = keys.get(site_key)
-        key_error = validate_key(key_record)
+        reserved, key_error = reserve_key_usage(site_key, total_requested)
         if key_error:
             self.send_json(key_error[0], {"error": key_error[1]})
-            return
-
-        remaining_before = key_record["limit"] - key_record["used"]
-        if remaining_before <= 0:
-            self.send_json(429, {"error": "这个 key 的次数已用完。", "remaining": 0})
-            return
-        if remaining_before < total_requested:
-            self.send_json(429, {"error": f"这个 key 剩余 {remaining_before} 次，不够本次请求的 {total_requested} 张。", "remaining": remaining_before})
             return
 
         results = []
@@ -182,43 +205,49 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 order += 1
                 tasks.append({"order": order, "model": model, "index": request_index})
 
-        with concurrent.futures.ThreadPoolExecutor(max_workers=min(MAX_CONCURRENT_UPSTREAM, len(tasks))) as executor:
-            futures = [
-                executor.submit(
-                    self.call_single_image,
-                    upstream_base_url,
-                    upstream_path,
-                    task["model"],
-                    task["index"],
-                    task["order"],
-                    prompt,
-                    size,
-                    quality,
-                    output_format,
-                    image,
-                    is_edit,
-                )
-                for task in tasks
-            ]
-            for future in concurrent.futures.as_completed(futures):
-                result = future.result()
-                if result.get("error"):
-                    errors.append(result)
-                    continue
-                results.append(result)
+        try:
+            with concurrent.futures.ThreadPoolExecutor(max_workers=min(MAX_CONCURRENT_UPSTREAM, len(tasks))) as executor:
+                futures = [
+                    executor.submit(
+                        self.call_single_image,
+                        upstream_base_url,
+                        upstream_path,
+                        task["model"],
+                        task["index"],
+                        task["order"],
+                        prompt,
+                        size,
+                        quality,
+                        output_format,
+                        image,
+                        is_edit,
+                    )
+                    for task in tasks
+                ]
+                for future in concurrent.futures.as_completed(futures):
+                    result = future.result()
+                    if result.get("error"):
+                        errors.append(result)
+                        continue
+                    results.append(result)
+        except Exception:
+            adjust_key_usage(site_key, -total_requested)
+            raise
 
         results.sort(key=lambda item: item.get("order", 0))
         for item in results:
             item.pop("order", None)
 
+        refund = total_requested - len(results)
+        if refund > 0:
+            updated = adjust_key_usage(site_key, -refund)
+            if updated:
+                reserved = updated
+
         if not results:
             message = errors[0]["error"] if errors else "接口没有返回图片数据。"
             self.send_json(502, {"error": message, "errors": errors})
             return
-
-        key_record["used"] += len(results)
-        key_record["updatedAt"] = iso_now()
-        save_keys(keys)
 
         self.send_json(200, {
             "data": results,
@@ -227,9 +256,9 @@ class Handler(http.server.BaseHTTPRequestHandler):
             "quality": quality,
             "output_format": output_format,
             "siteKey": {
-                "remaining": max(key_record["limit"] - key_record["used"], 0),
-                "used": key_record["used"],
-                "limit": key_record["limit"],
+                "remaining": max(reserved["limit"] - reserved["used"], 0),
+                "used": reserved["used"],
+                "limit": reserved["limit"],
             },
         })
 
@@ -311,21 +340,22 @@ class Handler(http.server.BaseHTTPRequestHandler):
         with urllib.request.urlopen(request, timeout=UPSTREAM_TIMEOUT) as response:
             return json.loads(response.read().decode("utf-8"))
 
-    def handle_key_status(self, parsed):
-        query = urllib.parse.parse_qs(parsed.query)
-        site_key = str(query.get("siteKey", [""])[0]).strip()
+    def handle_key_status(self):
+        body = self.read_json_body()
+        if body is None:
+            return
+        site_key = str(body.get("siteKey", "")).strip()
         if not site_key:
             self.send_json(400, {"error": "请输入 key。"})
             return
-        key_record = load_keys().get(site_key)
-        key_error = validate_key(key_record)
+        record, key_error = get_key_status(site_key)
         if key_error:
             self.send_json(key_error[0], {"error": key_error[1]})
             return
         self.send_json(200, {
-            "remaining": max(key_record["limit"] - key_record["used"], 0),
-            "used": key_record["used"],
-            "limit": key_record["limit"],
+            "remaining": max(record["limit"] - record["used"], 0),
+            "used": record["used"],
+            "limit": record["limit"],
         })
 
     def read_json_body(self):
@@ -350,10 +380,24 @@ class Handler(http.server.BaseHTTPRequestHandler):
         if not str(file_path).startswith(str(ROOT)) or not file_path.exists():
             self.send_text(404, "Not found")
             return
+        stat = file_path.stat()
+        etag = f'W/"{int(stat.st_mtime)}-{stat.st_size}"'
+        cache_control = (
+            "public, max-age=86400, immutable" if is_thumb
+            else "public, max-age=300, must-revalidate"
+        )
+        if self.headers.get("If-None-Match") == etag:
+            self.send_response(304)
+            self.send_header("ETag", etag)
+            self.send_header("Cache-Control", cache_control)
+            self.end_headers()
+            return
         content_type = mimetypes.guess_type(str(file_path))[0] or "application/octet-stream"
         self.send_response(200)
         self.send_header("Content-Type", f"{content_type}; charset=utf-8" if content_type.startswith("text/") else content_type)
-        self.send_header("Cache-Control", "public, max-age=86400" if is_thumb else "no-store")
+        self.send_header("Cache-Control", cache_control)
+        self.send_header("ETag", etag)
+        self.send_header("Content-Length", str(stat.st_size))
         self.end_headers()
         if not head_only:
             self.wfile.write(file_path.read_bytes())
@@ -378,7 +422,12 @@ class Handler(http.server.BaseHTTPRequestHandler):
         self.wfile.write(data)
 
     def send_cors_headers(self):
-        self.send_header("Access-Control-Allow-Origin", "*")
+        origin = self.headers.get("Origin")
+        if origin and origin in ALLOWED_ORIGINS:
+            self.send_header("Access-Control-Allow-Origin", origin)
+            self.send_header("Vary", "Origin")
+            return True
+        return False
 
     def log_message(self, format, *args):
         print(f"{self.address_string()} - {format % args}")
@@ -412,7 +461,51 @@ def load_keys():
 
 
 def save_keys(keys):
-    KEYS_FILE.write_text(json.dumps(keys, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    payload = json.dumps(keys, ensure_ascii=False, indent=2) + "\n"
+    tmp = KEYS_FILE.with_suffix(KEYS_FILE.suffix + ".tmp")
+    tmp.write_text(payload, encoding="utf-8")
+    os.replace(tmp, KEYS_FILE)
+
+
+def reserve_key_usage(site_key, requested):
+    with _KEYS_LOCK:
+        keys = load_keys()
+        record = keys.get(site_key)
+        err = validate_key(record)
+        if err:
+            return None, err
+        remaining = record["limit"] - record["used"]
+        if remaining <= 0:
+            return None, (429, "这个 key 的次数已用完。")
+        if remaining < requested:
+            return None, (429, f"这个 key 剩余 {remaining} 次，不够本次请求的 {requested} 张。")
+        record["used"] += requested
+        record["updatedAt"] = iso_now()
+        save_keys(keys)
+        return dict(record), None
+
+
+def adjust_key_usage(site_key, delta):
+    if delta == 0:
+        return None
+    with _KEYS_LOCK:
+        keys = load_keys()
+        record = keys.get(site_key)
+        if not record:
+            return None
+        record["used"] = max(0, int(record.get("used", 0)) + delta)
+        record["updatedAt"] = iso_now()
+        save_keys(keys)
+        return dict(record)
+
+
+def get_key_status(site_key):
+    with _KEYS_LOCK:
+        record = load_keys().get(site_key)
+        err = validate_key(record)
+        if err:
+            return None, err
+        return dict(record), None
 
 
 def validate_key(key_record):

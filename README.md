@@ -216,6 +216,8 @@ sudo journalctl -u img-gener-prompts-sync.service -n 100 --no-pager
 | `UPSTREAM_API_KEY` | 无 | 真实上游 API Key |
 | `SITE_KEYS_FILE` | `keys.json` | 网站 Key 数据文件 |
 | `UPSTREAM_TIMEOUT` | `600` | 单个上游请求超时时间，单位秒 |
+| `ALLOWED_HOSTS` | 空（127.0.0.1/localhost/[::1] 始终允许）| 逗号分隔；反代部署时填上对外域名，例如 `img-gener.example.com` |
+| `ALLOWED_ORIGINS` | 空 | 跨域来源白名单，逗号分隔；同源访问无需配置 |
 | `IMG_GENER_ROOT` | 当前项目目录 | 提示词图库同步根目录 |
 | `AWESOME_PROMPT_REPO_URL` | 官方仓库 URL | awesome-gpt-image-2 来源 |
 | `BANANA_PROMPT_REPO_URL` | 官方仓库 URL | banana-prompt-quicker 来源 |

@@ -30,8 +30,8 @@ def main():
         awesome_cases = parse_awesome_cases(AWESOME_REPO_DIR)
         banana_cases = parse_banana_cases(BANANA_REPO_DIR, number_start=len(awesome_cases) + 1)
         converted = convert_case_images(awesome_cases + banana_cases)
-        write_js(APP_ROOT / "prompt-templates.js", "PROMPT_TEMPLATE_SOURCE", source_payload(), "PROMPT_TEMPLATES", templates)
-        write_js(APP_ROOT / "prompt-cases.js", "PROMPT_CASE_SOURCE", {**source_payload(), "imageMode": "local-webp"}, "PROMPT_CASES", converted)
+        write_json(APP_ROOT / "prompt-templates.json", source_payload(), templates, "templates")
+        write_json(APP_ROOT / "prompt-cases.json", {**source_payload(), "imageMode": "local-webp"}, converted, "cases")
         print(json.dumps({
             "templates": len(templates),
             "awesome_cases": len(awesome_cases),
@@ -251,11 +251,8 @@ def convert_to_webp(source, target):
         image.convert("RGB").save(target, "WEBP", quality=72, method=6)
 
 
-def write_js(path, source_name, source, data_name, data):
-    payload = (
-        f"window.{source_name} = {json.dumps(source, ensure_ascii=False, indent=2)};\n\n"
-        f"window.{data_name} = {json.dumps(data, ensure_ascii=False, indent=2)};\n"
-    )
+def write_json(path, source, data, data_key):
+    payload = json.dumps({"source": source, data_key: data}, ensure_ascii=False, indent=2) + "\n"
     tmp = path.with_suffix(path.suffix + ".tmp")
     tmp.write_text(payload, encoding="utf-8")
     tmp.replace(path)

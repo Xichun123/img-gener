@@ -20,11 +20,16 @@
     </section>
 
     <section class="panel gallery-panel">
+      <div class="gallery-toolbar">
+        <input id="caseSearch" type="search" placeholder="搜索：标题 / 提示词 / 来源" aria-label="搜索效果图">
+        <div id="caseCategories" class="category-chips" role="tablist" aria-label="分类筛选"></div>
+        <span id="caseCount" class="gallery-count" aria-live="polite"></span>
+      </div>
       <div id="caseGallery" class="gallery-page-grid" aria-label="效果图图库"></div>
+      <div id="caseSentinel" class="gallery-sentinel" aria-hidden="true"></div>
     </section>
   </main>
 
-  <script src="prompt-cases.js"></script>
   <script src="prompt-gallery.js"></script>
 </body>
 </html>

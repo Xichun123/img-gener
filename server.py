@@ -23,6 +23,7 @@ PUBLIC_FILES = {
     "/prompt-gallery.js",
     "/prompt-templates.json",
     "/prompt-cases.json",
+    "/manifest.webmanifest",
     "/favicon.ico",
     "/favicon.png",
     "/apple-touch-icon.png",
@@ -30,6 +31,8 @@ PUBLIC_FILES = {
     "/assets/icon-source.png",
 }
 MAX_BODY_BYTES = 28 * 1024 * 1024
+
+mimetypes.add_type("application/manifest+json", ".webmanifest")
 
 ALLOWED_MODELS = {
     "gpt-image-2",

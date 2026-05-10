@@ -25,8 +25,16 @@ const requestState = document.querySelector('#requestState');
 const previewBox = document.querySelector('#previewBox');
 const metaBox = document.querySelector('#metaBox');
 const downloadBtn = document.querySelector('#downloadBtn');
+const historyPanel = document.querySelector('#historyPanel');
+const historyList = document.querySelector('#historyList');
+const historyMeta = document.querySelector('#historyMeta');
+const historyClearBtn = document.querySelector('#historyClearBtn');
 
 const MAX_TOTAL_IMAGES = 6;
+const HISTORY_KEY = 'img-gener.history';
+const HISTORY_MAX = 20;
+const HISTORY_THUMB = 192;
+const ALLOWED_IMAGE_TYPES = new Set(['image/png', 'image/jpeg', 'image/webp']);
 let currentImages = [];
 let promptTemplates = [];
 let inlineEditSource = null;
@@ -58,6 +66,7 @@ refreshKeyStatus();
 updateMode();
 loadPromptTemplates();
 applyPendingGalleryPrompt();
+renderHistory(loadHistory());
 
 form.addEventListener('submit', async (event) => {
   event.preventDefault();
@@ -92,6 +101,57 @@ promptTemplateInput?.addEventListener('change', updateTemplatePreview);
 promptTemplateFilter?.addEventListener('input', filterPromptTemplates);
 useTemplateBtn?.addEventListener('click', () => applyPromptTemplate('replace'));
 appendTemplateBtn?.addEventListener('click', () => applyPromptTemplate('append'));
+
+promptInput.addEventListener('keydown', (event) => {
+  if ((event.ctrlKey || event.metaKey) && event.key === 'Enter') {
+    event.preventDefault();
+    if (!generateBtn.disabled) form.requestSubmit();
+  }
+});
+
+document.addEventListener('paste', (event) => {
+  if (event.target?.tagName === 'INPUT' && event.target.type !== 'file') return;
+  const file = pickImageFromTransfer(event.clipboardData);
+  if (!file) return;
+  event.preventDefault();
+  ingestImageFile(file, '已从剪贴板载入图片，已切换到图生图。');
+});
+
+['dragenter', 'dragover'].forEach((evt) => {
+  form.addEventListener(evt, (event) => {
+    if (!event.dataTransfer?.types?.includes('Files')) return;
+    event.preventDefault();
+    form.classList.add('dragover');
+  });
+});
+['dragleave', 'dragend', 'drop'].forEach((evt) => {
+  form.addEventListener(evt, () => form.classList.remove('dragover'));
+});
+form.addEventListener('drop', (event) => {
+  const file = pickImageFromTransfer(event.dataTransfer);
+  if (!file) return;
+  event.preventDefault();
+  ingestImageFile(file, '已载入拖入的图片，已切换到图生图。');
+});
+
+historyClearBtn?.addEventListener('click', () => {
+  if (!loadHistory().length) return;
+  if (!confirm('清空生成历史？此操作不可撤销。')) return;
+  saveHistory([]);
+  renderHistory([]);
+});
+
+historyList?.addEventListener('click', (event) => {
+  const button = event.target.closest('button[data-action]');
+  if (!button) return;
+  const card = button.closest('article[data-id]');
+  if (!card) return;
+  const id = card.dataset.id;
+  const action = button.dataset.action;
+  if (action === 'delete') return deleteHistoryEntry(id);
+  if (action === 'fill') return fillFromHistory(id);
+  if (action === 'edit') return useHistoryAsEdit(id);
+});
 
 async function generateImage() {
   const siteKey = siteKeyInput.value.trim();
@@ -193,6 +253,7 @@ async function generateImage() {
     const failedText = payload.errors?.length ? `，失败 ${payload.errors.length} 个模型` : '';
     setState(`完成 ${currentImages.length} 张${failedText} · 用时 ${formatElapsed(Date.now() - generationStartedAt)}`, payload.errors?.length ? 'error' : 'ok');
     setControls(true);
+    addHistoryEntries(currentImages).catch((err) => console.warn('history save failed', err));
   } catch (error) {
     currentImages = [];
     setPreviewError(error.message);
@@ -557,4 +618,180 @@ function escapeHtml(value) {
     .replaceAll('>', '&gt;')
     .replaceAll('"', '&quot;')
     .replaceAll("'", '&#039;');
+}
+
+function pickImageFromTransfer(transfer) {
+  if (!transfer) return null;
+  for (const file of transfer.files || []) {
+    if (file && ALLOWED_IMAGE_TYPES.has(file.type)) return file;
+  }
+  for (const item of transfer.items || []) {
+    if (item.kind === 'file') {
+      const file = item.getAsFile();
+      if (file && ALLOWED_IMAGE_TYPES.has(file.type)) return file;
+    }
+  }
+  return null;
+}
+
+function ingestImageFile(file, message) {
+  if (!ALLOWED_IMAGE_TYPES.has(file.type)) {
+    setState('图片格式不支持，仅支持 PNG / JPEG / WebP', 'error');
+    return;
+  }
+  if (file.size > 20 * 1024 * 1024) {
+    setState('图片超过 20MB，请压缩后再上传', 'error');
+    return;
+  }
+  try {
+    const dt = new DataTransfer();
+    dt.items.add(file);
+    sourceImageInput.files = dt.files;
+  } catch {
+    setState('当前浏览器不支持代码上传文件', 'error');
+    return;
+  }
+  inlineEditSource = null;
+  modeInput.value = 'edit';
+  updateMode();
+  setState(message || '已载入图片，已切换到图生图。', 'ok');
+}
+
+function loadHistory() {
+  try {
+    const raw = JSON.parse(localStorage.getItem(HISTORY_KEY) || '[]');
+    return Array.isArray(raw) ? raw : [];
+  } catch {
+    return [];
+  }
+}
+
+function saveHistory(items) {
+  let toStore = items.slice(0, HISTORY_MAX);
+  while (toStore.length) {
+    try {
+      localStorage.setItem(HISTORY_KEY, JSON.stringify(toStore));
+      return;
+    } catch {
+      toStore = toStore.slice(0, Math.max(0, toStore.length - 3));
+    }
+  }
+  try { localStorage.removeItem(HISTORY_KEY); } catch {}
+}
+
+async function addHistoryEntries(images) {
+  if (!images?.length) return;
+  const entries = await Promise.all(images.map(async (item) => ({
+    id: item.id || crypto.randomUUID(),
+    prompt: item.prompt,
+    model: item.model,
+    size: item.size,
+    quality: item.quality,
+    outputFormat: item.outputFormat,
+    mode: item.mode,
+    createdAt: item.createdAt,
+    thumb: await makeThumb(item.imageData, HISTORY_THUMB),
+  })));
+  const next = [...entries, ...loadHistory()].slice(0, HISTORY_MAX);
+  saveHistory(next);
+  renderHistory(next);
+}
+
+function makeThumb(dataUrl, size) {
+  return new Promise((resolve) => {
+    if (!dataUrl) return resolve('');
+    const img = new Image();
+    img.onload = () => {
+      const ratio = Math.min(1, size / Math.max(img.width, img.height));
+      const w = Math.max(1, Math.round(img.width * ratio));
+      const h = Math.max(1, Math.round(img.height * ratio));
+      const canvas = document.createElement('canvas');
+      canvas.width = w;
+      canvas.height = h;
+      try {
+        canvas.getContext('2d').drawImage(img, 0, 0, w, h);
+        resolve(canvas.toDataURL('image/webp', 0.7));
+      } catch {
+        resolve('');
+      }
+    };
+    img.onerror = () => resolve('');
+    img.src = dataUrl;
+  });
+}
+
+function renderHistory(items) {
+  if (!historyPanel || !historyList) return;
+  if (!items.length) {
+    historyPanel.classList.add('hidden');
+    historyList.innerHTML = '';
+    if (historyMeta) historyMeta.textContent = '';
+    return;
+  }
+  historyPanel.classList.remove('hidden');
+  if (historyMeta) historyMeta.textContent = `${items.length} / ${HISTORY_MAX}（仅本机本浏览器）`;
+  const fragment = document.createDocumentFragment();
+  for (const entry of items) {
+    const card = document.createElement('article');
+    card.className = 'history-card';
+    card.dataset.id = entry.id;
+    const time = formatHistoryDate(entry.createdAt);
+    card.innerHTML = `
+      <div class="history-card-thumb">
+        ${entry.thumb ? `<img src="${escapeHtml(entry.thumb)}" alt="${escapeHtml(entry.prompt || '')}" loading="lazy">` : ''}
+        <button type="button" class="history-card-delete" data-action="delete" aria-label="删除这一条">×</button>
+      </div>
+      <div class="history-card-body">
+        <div class="history-meta">
+          <span>${escapeHtml(entry.model || 'model')}</span>
+          <span>${escapeHtml(time)}</span>
+        </div>
+        <div class="history-prompt" title="${escapeHtml(entry.prompt || '')}">${escapeHtml(entry.prompt || '')}</div>
+      </div>
+      <div class="history-card-actions">
+        <button type="button" data-action="fill">填入提示词</button>
+        <button type="button" data-action="edit">作为编辑源</button>
+      </div>
+    `;
+    fragment.appendChild(card);
+  }
+  historyList.innerHTML = '';
+  historyList.appendChild(fragment);
+}
+
+function deleteHistoryEntry(id) {
+  const next = loadHistory().filter((entry) => entry.id !== id);
+  saveHistory(next);
+  renderHistory(next);
+}
+
+function fillFromHistory(id) {
+  const entry = loadHistory().find((item) => item.id === id);
+  if (!entry) return;
+  promptInput.value = entry.prompt || '';
+  promptInput.focus();
+  setState('已填入历史提示词。', 'ok');
+}
+
+function useHistoryAsEdit(id) {
+  const entry = loadHistory().find((item) => item.id === id);
+  if (!entry?.thumb) {
+    setState('该历史条目没有可用的预览。', 'error');
+    return;
+  }
+  setInlineEditSource(entry.thumb, `history-${entry.id.slice(0, 8)}.webp`);
+  modeInput.value = 'edit';
+  promptInput.value = entry.prompt || '';
+  updateMode();
+  promptInput.focus();
+  setState('已用历史预览作为编辑源（缩略图，分辨率较小）。', 'ok');
+  form.scrollIntoView({ behavior: 'smooth', block: 'start' });
+}
+
+function formatHistoryDate(iso) {
+  if (!iso) return '';
+  const date = new Date(iso);
+  if (Number.isNaN(date.getTime())) return iso;
+  const pad = (n) => String(n).padStart(2, '0');
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}`;
 }

@@ -1,0 +1,25 @@
+{
+  "name": "Img Gener",
+  "short_name": "Img Gener",
+  "description": "自托管 AI 生图控制台",
+  "start_url": "/index.html",
+  "scope": "/",
+  "display": "standalone",
+  "background_color": "#090b12",
+  "theme_color": "#7c5cff",
+  "lang": "zh-CN",
+  "icons": [
+    {
+      "src": "/apple-touch-icon.png",
+      "sizes": "180x180",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "/assets/icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any maskable"
+    }
+  ]
+}

@@ -1,15 +1,13 @@
 #!/usr/bin/env python3
-import concurrent.futures
 import http.server
-import base64
 import json
 import mimetypes
 import os
 import pathlib
 import threading
-import urllib.error
 import urllib.parse
-import urllib.request
+
+import upstream_client
 
 
 ROOT = pathlib.Path(__file__).resolve().parent
@@ -79,6 +77,7 @@ load_env()
 UPSTREAM_BASE_URL = os.environ.get("UPSTREAM_BASE_URL")
 UPSTREAM_API_KEY = os.environ.get("UPSTREAM_API_KEY")
 UPSTREAM_TIMEOUT = int(os.environ.get("UPSTREAM_TIMEOUT", "600"))
+UPSTREAM_PROTOCOL = os.environ.get("UPSTREAM_PROTOCOL", "openai")
 
 
 def _split_env_set(name):
@@ -162,6 +161,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
         quality = str(body.get("quality", "")).strip()
         output_format = str(body.get("output_format", "")).strip()
         image = body.get("image") if isinstance(body.get("image"), dict) else None
+        is_edit = upstream_path.endswith("/edits")
 
         if not site_key:
             self.send_json(401, {"error": "请输入 key。"})
@@ -188,7 +188,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
         if output_format not in ALLOWED_FORMATS:
             self.send_json(400, {"error": "不支持的输出格式。"})
             return
-        if upstream_path.endswith("/edits") and not image:
+        if is_edit and not image:
             self.send_json(400, {"error": "请上传图片。"})
             return
 
@@ -197,47 +197,23 @@ class Handler(http.server.BaseHTTPRequestHandler):
             self.send_json(key_error[0], {"error": key_error[1]})
             return
 
-        results = []
-        errors = []
-        upstream_base_url = UPSTREAM_BASE_URL.rstrip("/")
-        is_edit = upstream_path.endswith("/edits")
         tasks = []
         order = 0
         for model in models:
             for request_index in range(1, n + 1):
                 order += 1
-                tasks.append({"order": order, "model": model, "index": request_index})
+                tasks.append({
+                    "order": order, "model": model, "index": request_index,
+                    "prompt": prompt, "size": size, "quality": quality,
+                    "output_format": output_format, "image": image, "is_edit": is_edit,
+                })
 
         try:
-            with concurrent.futures.ThreadPoolExecutor(max_workers=min(MAX_CONCURRENT_UPSTREAM, len(tasks))) as executor:
-                futures = [
-                    executor.submit(
-                        self.call_single_image,
-                        upstream_base_url,
-                        upstream_path,
-                        task["model"],
-                        task["index"],
-                        task["order"],
-                        prompt,
-                        size,
-                        quality,
-                        output_format,
-                        image,
-                        is_edit,
-                    )
-                    for task in tasks
-                ]
-                for future in concurrent.futures.as_completed(futures):
-                    result = future.result()
-                    if result.get("error"):
-                        errors.append(result)
-                        continue
-                    results.append(result)
+            results, errors = upstream_client.batch_generate(MODEL_CLIENT_MAP, tasks)
         except Exception:
             adjust_key_usage(site_key, -total_requested)
             raise
 
-        results.sort(key=lambda item: item.get("order", 0))
         for item in results:
             item.pop("order", None)
 
@@ -264,84 +240,6 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 "limit": reserved["limit"],
             },
         })
-
-
-    def call_single_image(self, upstream_base_url, upstream_path, model, request_index, order, prompt, size, quality, output_format, image, is_edit):
-        upstream_payload = {
-            "model": model,
-            "prompt": prompt,
-            "n": 1,
-            "size": size,
-            "quality": quality,
-            "output_format": output_format,
-        }
-        try:
-            if model in GEMINI_IMAGE_MODELS:
-                payload = self.call_gemini_upstream(upstream_base_url, model, prompt, image, is_edit)
-            else:
-                upstream_url = f"{upstream_base_url}{upstream_path}"
-                payload = self.call_upstream(upstream_url, upstream_payload, image, is_edit)
-        except urllib.error.HTTPError as error:
-            error_payload = parse_json(error.read().decode("utf-8", errors="replace"))
-            return {"model": model, "index": request_index, "order": order, "error": extract_error(error_payload) or f"上游请求失败：HTTP {error.code}"}
-        except Exception as error:
-            return {"model": model, "index": request_index, "order": order, "error": f"上游请求失败：{error}"}
-
-        if model in GEMINI_IMAGE_MODELS:
-            inline_data = find_gemini_inline_data(payload)
-            if not inline_data:
-                return {"model": model, "index": request_index, "order": order, "error": "接口没有返回图片数据。"}
-            copied = {"b64_json": inline_data["data"]}
-        else:
-            data_items = payload.get("data", [])
-            if not isinstance(data_items, list) or not data_items or not isinstance(data_items[0], dict):
-                return {"model": model, "index": request_index, "order": order, "error": "接口没有返回图片数据。"}
-            copied = dict(data_items[0])
-        copied["model"] = model
-        copied["result_index"] = request_index
-        copied["order"] = order
-        return copied
-
-    def call_upstream(self, upstream_url, upstream_payload, image, is_edit):
-        if is_edit:
-            data, content_type = build_multipart(upstream_payload, image)
-        else:
-            data = json.dumps(upstream_payload).encode("utf-8")
-            content_type = "application/json"
-
-        request = urllib.request.Request(
-            upstream_url,
-            data=data,
-            headers={"Authorization": f"Bearer {UPSTREAM_API_KEY}", "Content-Type": content_type},
-            method="POST",
-        )
-        with urllib.request.urlopen(request, timeout=UPSTREAM_TIMEOUT) as response:
-            return json.loads(response.read().decode("utf-8"))
-
-    def call_gemini_upstream(self, upstream_base_url, model, prompt, image, is_edit):
-        parts = []
-        if is_edit and image:
-            image_data = str(image.get("data", ""))
-            if not image_data:
-                raise ValueError("图片数据为空。")
-            mime = str(image.get("type") or "application/octet-stream")
-            if mime not in {"image/png", "image/jpeg", "image/webp"}:
-                raise ValueError("只支持 PNG / JPEG / WebP。")
-            parts.append({"inlineData": {"mimeType": mime, "data": image_data}})
-        parts.append({"text": prompt})
-
-        upstream_payload = {
-            "contents": [{"role": "user", "parts": parts}],
-            "generationConfig": {"responseModalities": ["IMAGE", "TEXT"]},
-        }
-        request = urllib.request.Request(
-            f"{upstream_base_url}/v1beta/models/{urllib.parse.quote(model, safe='')}:generateContent",
-            data=json.dumps(upstream_payload).encode("utf-8"),
-            headers={"Authorization": f"Bearer {UPSTREAM_API_KEY}", "Content-Type": "application/json"},
-            method="POST",
-        )
-        with urllib.request.urlopen(request, timeout=UPSTREAM_TIMEOUT) as response:
-            return json.loads(response.read().decode("utf-8"))
 
     def handle_key_status(self):
         body = self.read_json_body()
@@ -457,6 +355,27 @@ def parse_count(value):
     except (TypeError, ValueError):
         return 0
 
+
+def _init_model_client_map():
+    """Build model -> UpstreamClient mapping at startup."""
+    protocol_clients = {}
+    model_map = {}
+    for model in ALLOWED_MODELS:
+        protocol = "gemini" if model in GEMINI_IMAGE_MODELS else "openai"
+        if protocol not in protocol_clients:
+            protocol_clients[protocol] = upstream_client.create_client(
+                base_url=UPSTREAM_BASE_URL,
+                api_key=UPSTREAM_API_KEY,
+                protocol=protocol,
+                timeout=UPSTREAM_TIMEOUT,
+            )
+        model_map[model] = protocol_clients[protocol]
+    return model_map
+
+
+MODEL_CLIENT_MAP = _init_model_client_map()
+
+
 def load_keys():
     if not KEYS_FILE.exists():
         return {}
@@ -521,84 +440,13 @@ def validate_key(key_record):
     return None
 
 
-def parse_json(text):
-    try:
-        return json.loads(text)
-    except json.JSONDecodeError:
-        return {}
-
-
-def extract_error(payload):
-    error = payload.get("error") if isinstance(payload, dict) else None
-    if isinstance(error, dict):
-        return error.get("message")
-    if isinstance(error, str):
-        return error
-    return payload.get("message") if isinstance(payload, dict) else None
-
-
-def find_gemini_inline_data(value):
-    if isinstance(value, dict):
-        inline_data = value.get("inlineData")
-        if isinstance(inline_data, dict) and inline_data.get("data"):
-            return inline_data
-        inline_data = value.get("inline_data")
-        if isinstance(inline_data, dict) and inline_data.get("data"):
-            return inline_data
-        for child in value.values():
-            found = find_gemini_inline_data(child)
-            if found:
-                return found
-    if isinstance(value, list):
-        for child in value:
-            found = find_gemini_inline_data(child)
-            if found:
-                return found
-    return None
-
-
-def build_multipart(fields, image):
-    boundary = f"----ImgGener{secrets_hex()}"
-    parts = []
-    for key, value in fields.items():
-      parts.append(
-          f"--{boundary}\r\n"
-          f"Content-Disposition: form-data; name=\"{key}\"\r\n\r\n"
-          f"{value}\r\n".encode("utf-8")
-      )
-    image_bytes = base64.b64decode(str(image.get("data", "")), validate=True)
-    if len(image_bytes) > 20 * 1024 * 1024:
-        raise ValueError("图片太大，最大 20MB。")
-    filename = sanitize_filename(str(image.get("name") or "image.png"))
-    mime = str(image.get("type") or "application/octet-stream")
-    if mime not in {"image/png", "image/jpeg", "image/webp"}:
-        raise ValueError("只支持 PNG / JPEG / WebP。")
-    parts.append(
-        f"--{boundary}\r\n"
-        f"Content-Disposition: form-data; name=\"image\"; filename=\"{filename}\"\r\n"
-        f"Content-Type: {mime}\r\n\r\n".encode("utf-8")
-        + image_bytes
-        + b"\r\n"
-    )
-    parts.append(f"--{boundary}--\r\n".encode("utf-8"))
-    return b"".join(parts), f"multipart/form-data; boundary={boundary}"
-
-
-def sanitize_filename(name):
-    return "".join(ch for ch in name if ch.isalnum() or ch in {".", "_", "-"})[:120] or "image.png"
-
-
-def secrets_hex():
-    import secrets
-    return secrets.token_hex(12)
-
-
 def iso_now():
     from datetime import datetime, timezone
     return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
 
 
 if __name__ == "__main__":
+    upstream_client.init_executor(max_workers=MAX_CONCURRENT_UPSTREAM)
     with http.server.ThreadingHTTPServer(("127.0.0.1", PORT), Handler) as server:
         print(f"Image console running at http://127.0.0.1:{PORT}")
         server.serve_forever()

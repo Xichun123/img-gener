@@ -1,0 +1,245 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Model Routes · Img Gener Admin</title>
+  <link rel="icon" href="favicon.ico" sizes="any">
+  <link rel="manifest" href="manifest.webmanifest">
+  <meta name="theme-color" content="#faf9f5">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:wght@400;500;600&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <section id="loginGate" class="login-gate">
+    <form class="login-card" id="loginForm" autocomplete="off">
+      <div class="login-card-brand">
+        <svg class="brand-mark" viewBox="0 0 16 16" aria-hidden="true" focusable="false">
+          <path fill="currentColor" d="M8 0 9.2 6.8 16 8 9.2 9.2 8 16 6.8 9.2 0 8 6.8 6.8z"/>
+        </svg>
+        <span>Img Gener Admin</span>
+      </div>
+      <h1>登录管理后台</h1>
+      <p class="login-subtitle">输入 ADMIN_TOKEN 进入管理后台。登录有效期 30 天。</p>
+      <label class="login-field">
+        <span>ADMIN_TOKEN</span>
+        <input id="loginToken" type="password" placeholder="ADMIN_TOKEN" autocomplete="current-password" required>
+      </label>
+      <button id="loginSubmit" type="submit" class="primary-btn">登录</button>
+      <small id="loginError" class="danger-text" hidden></small>
+    </form>
+  </section>
+
+  <div id="adminContent" hidden>
+    <header class="topnav">
+      <div class="topnav-inner">
+        <a class="brand" href="index.html" aria-label="Img Gener 首页">
+          <svg class="brand-mark" viewBox="0 0 16 16" aria-hidden="true" focusable="false">
+            <path fill="currentColor" d="M8 0 9.2 6.8 16 8 9.2 9.2 8 16 6.8 9.2 0 8 6.8 6.8z"/>
+          </svg>
+          <span>Img Gener</span>
+        </a>
+        <nav class="topnav-nav" aria-label="主导航">
+          <a class="topnav-link" href="index.html">生成</a>
+          <a class="topnav-link" href="gallery.html">案例图库</a>
+          <a class="topnav-link is-active" href="admin.html">管理</a>
+        </nav>
+        <span class="topnav-spacer"></span>
+        <div class="topnav-actions">
+          <button id="logoutBtn" type="button" class="ghost-btn small-btn">退出</button>
+        </div>
+      </div>
+    </header>
+
+    <main class="shell">
+      <section class="hero">
+        <div class="hero-text">
+          <span class="eyebrow">Model Routes</span>
+          <h1 class="display-xl">管理上游模型与 provider。</h1>
+          <p class="lead">配置稳定的对外模型 id、多个上游 provider 的健康路由，单点测试与熔断状态都在这里。</p>
+        </div>
+        <aside class="hero-aside">
+          <div class="status-card">
+            <span class="status-dot"></span>
+            <div>
+              <strong>状态 · <span id="adminState">未加载</span></strong>
+              <small>编辑后点「保存配置」生效，刷新可丢弃改动。</small>
+            </div>
+          </div>
+        </aside>
+      </section>
+
+      <section class="actions" style="margin-bottom: var(--space-md);">
+        <button id="refreshRoutesBtn" type="button" class="ghost-btn">刷新</button>
+        <button id="saveRoutesBtn" type="button" class="primary-btn">保存配置</button>
+        <button id="resetHealthBtn" type="button" class="ghost-btn">清空熔断</button>
+        <a class="ghost-btn" href="index.html">返回生成台</a>
+      </section>
+
+      <section class="card admin-panel">
+        <header class="card-heading">
+          <h2>模型列表 <span id="modelCount" class="muted-count"></span></h2>
+          <div class="header-actions">
+            <button id="expandAllBtn" type="button" class="ghost-btn small-btn" disabled>全部展开</button>
+            <button id="collapseAllBtn" type="button" class="ghost-btn small-btn" disabled>全部折叠</button>
+            <button id="addModelBtn" type="button" class="primary-btn small-btn" disabled>+ 新增模型</button>
+          </div>
+        </header>
+        <div id="modelsList" class="models-list">
+          <p class="field-note">加载中...</p>
+        </div>
+      </section>
+
+      <details class="card admin-panel is-raw">
+        <summary>查看 / 编辑原始 JSON</summary>
+        <textarea id="routesEditor" class="admin-editor" spellcheck="false" placeholder="加载后显示原始 JSON"></textarea>
+        <div class="actions">
+          <button id="applyRawBtn" type="button" class="ghost-btn">应用到表单</button>
+          <button id="formatRawBtn" type="button" class="ghost-btn">格式化</button>
+        </div>
+        <small class="field-note">这里改完点「应用到表单」，然后回到上面点「保存配置」。</small>
+      </details>
+
+      <section class="card admin-panel" id="testPanel" hidden>
+        <header class="card-heading">
+          <h2>Provider 测试结果</h2>
+          <button id="closeTestBtn" type="button" class="ghost-btn small-btn">关闭</button>
+        </header>
+        <small class="field-note" id="testMeta"></small>
+        <pre id="testResult" class="admin-result"></pre>
+      </section>
+    </main>
+
+    <footer class="footer">
+      <div class="footer-inner">
+        <a class="brand" href="index.html" aria-label="Img Gener">
+          <svg class="brand-mark" viewBox="0 0 16 16" aria-hidden="true" focusable="false">
+            <path fill="currentColor" d="M8 0 9.2 6.8 16 8 9.2 9.2 8 16 6.8 9.2 0 8 6.8 6.8z"/>
+          </svg>
+          <span>Img Gener</span>
+        </a>
+        <small>本地优先 · 自托管 · 多上游路由</small>
+        <div class="footer-links">
+          <a href="index.html">生成</a>
+          <a href="gallery.html">案例图库</a>
+        </div>
+      </div>
+    </footer>
+  </div>
+
+  <template id="modelCardTemplate">
+    <article class="model-card collapsed" data-role="model">
+      <header class="model-card-head">
+        <label class="check-inline">
+          <input type="checkbox" data-field="enabled">
+          <span>启用</span>
+        </label>
+        <input class="model-id-input" type="text" data-field="id" placeholder="模型 id（前端展示用）">
+        <input class="model-label-input" type="text" data-field="label" placeholder="显示名称">
+        <span class="model-summary" data-role="summary"></span>
+        <button type="button" class="ghost-btn small-btn" data-action="toggle-collapse">展开</button>
+        <button type="button" class="danger-btn small-btn" data-action="delete-model">删除</button>
+      </header>
+      <div class="model-card-body">
+        <label class="check-inline">
+          <input type="checkbox" data-field="supports_edit">
+          <span>支持图生图 / 编辑</span>
+        </label>
+        <div class="chip-field">
+          <span class="chip-label">尺寸 sizes</span>
+          <div class="chip-list" data-field="sizes"></div>
+          <div class="chip-add">
+            <input type="text" placeholder="新增尺寸，例如 1024x1024">
+            <button type="button" class="ghost-btn small-btn" data-action="add-chip">+</button>
+          </div>
+        </div>
+        <div class="chip-field">
+          <span class="chip-label">质量 qualities</span>
+          <div class="chip-list" data-field="qualities"></div>
+          <div class="chip-add">
+            <input type="text" placeholder="新增质量，例如 low / medium / high / auto">
+            <button type="button" class="ghost-btn small-btn" data-action="add-chip">+</button>
+          </div>
+        </div>
+        <div class="chip-field">
+          <span class="chip-label">输出格式 formats</span>
+          <div class="chip-list" data-field="formats"></div>
+          <div class="chip-add">
+            <input type="text" placeholder="新增格式，例如 png / jpeg / webp">
+            <button type="button" class="ghost-btn small-btn" data-action="add-chip">+</button>
+          </div>
+        </div>
+
+        <div class="providers-block">
+          <div class="providers-head">
+            <h3>Providers</h3>
+            <button type="button" class="ghost-btn small-btn" data-action="add-provider">+ 新增 provider</button>
+          </div>
+          <div class="providers-list" data-role="providers"></div>
+        </div>
+      </div>
+    </article>
+  </template>
+
+  <template id="providerCardTemplate">
+    <article class="provider-card" data-role="provider">
+      <header class="provider-card-head">
+        <label class="check-inline">
+          <input type="checkbox" data-field="enabled">
+          <span>启用</span>
+        </label>
+        <input class="provider-id-input" type="text" data-field="id" placeholder="provider id">
+        <input class="provider-priority-input" type="number" data-field="priority" min="1" max="9999" placeholder="优先级">
+        <button type="button" class="primary-btn small-btn" data-action="test-provider">测试</button>
+        <button type="button" class="danger-btn small-btn" data-action="delete-provider">删除</button>
+      </header>
+      <div class="provider-grid">
+        <label>
+          <span>协议 protocol</span>
+          <select data-field="protocol">
+            <option value="openai_images">openai_images</option>
+            <option value="gemini_native">gemini_native</option>
+            <option value="openai_responses_image">openai_responses_image</option>
+          </select>
+        </label>
+        <label>
+          <span>upstream_model</span>
+          <input type="text" data-field="upstream_model" placeholder="上游真实模型 id">
+        </label>
+        <label class="span-2">
+          <span>base_url</span>
+          <input type="text" data-field="base_url" placeholder="https://api.example.com">
+        </label>
+        <label class="span-2 api-key-row">
+          <span>api_key</span>
+          <div class="api-key-input">
+            <input type="password" data-field="api_key" placeholder="上游 API Key">
+            <button type="button" class="ghost-btn small-btn" data-action="toggle-key">显示</button>
+          </div>
+        </label>
+        <label>
+          <span>headers_preset</span>
+          <select data-field="headers_preset">
+            <option value="">(none)</option>
+            <option value="browser">browser</option>
+          </select>
+        </label>
+        <label class="check-inline">
+          <input type="checkbox" data-field="supports_generate">
+          <span>支持文生图</span>
+        </label>
+        <label class="check-inline">
+          <input type="checkbox" data-field="supports_edit">
+          <span>支持图生图</span>
+        </label>
+      </div>
+    </article>
+  </template>
+
+  <div id="toastHost" class="toast-host" aria-live="polite"></div>
+
+  <script src="admin.js"></script>
+</body>
+</html>

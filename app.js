@@ -1,9 +1,9 @@
 const form = document.querySelector('#generateForm');
 const siteKeyInput = document.querySelector('#siteKey');
 const keyStatus = document.querySelector('#keyStatus');
+const navKeyStatus = document.querySelector('#navKeyStatus');
 const modeInput = document.querySelector('#mode');
 const modelChoices = document.querySelector('#modelChoices');
-const modelInputs = Array.from(document.querySelectorAll('input[name="models"]'));
 const modelHint = document.querySelector('#modelHint');
 const sizeInput = document.querySelector('#size');
 const qualityInput = document.querySelector('#quality');
@@ -40,28 +40,12 @@ let promptTemplates = [];
 let inlineEditSource = null;
 let generationTimer = null;
 let generationStartedAt = 0;
+let modelInputs = [];
+let modelProfiles = {};
 const savedSiteKey = localStorage.getItem('img-gener.site-key') || '';
 if (savedSiteKey) siteKeyInput.value = savedSiteKey;
 
-const modelProfiles = {
-  'gpt-image-2': {
-    label: 'OpenAI gpt-image-2',
-    max: '3840×2160 / 2160×3840',
-    sizes: ['auto', '1024x1024', '1024x1536', '1536x1024', '1792x1024', '1024x1792', '2048x2048', '2048x3072', '3072x2048', '3840x2160', '2160x3840'],
-  },
-  'gemini-3-pro-image-preview': {
-    label: 'Gemini 3 Pro Image Preview',
-    max: '3840×2160 / 2160×3840',
-    sizes: ['auto', '1024x1024', '1024x1536', '1536x1024', '1792x1024', '1024x1792', '2048x2048', '2048x3072', '3072x2048', '3840x2160', '2160x3840'],
-  },
-  'gemini-3.1-flash-image-preview': {
-    label: 'Gemini 3.1 Flash Image Preview',
-    max: '3840×2160 / 2160×3840',
-    sizes: ['auto', '1024x1024', '1024x1536', '1536x1024', '1792x1024', '1024x1792', '2048x2048', '2048x3072', '3072x2048', '3840x2160', '2160x3840'],
-  },
-};
-
-updateModelProfile();
+loadModels();
 refreshKeyStatus();
 updateMode();
 loadPromptTemplates();
@@ -80,7 +64,7 @@ resetBtn.addEventListener('click', () => {
   outputFormatInput.value = 'png';
   imageCountInput.value = '1';
   clearInlineEditSource();
-  modelInputs.forEach((input, index) => { input.checked = index === 0; });
+  modelInputs.forEach((input) => { input.checked = false; });
   updateModelProfile();
   setState('等待生成');
   setPreviewEmpty();
@@ -152,6 +136,58 @@ historyList?.addEventListener('click', (event) => {
   if (action === 'fill') return fillFromHistory(id);
   if (action === 'edit') return useHistoryAsEdit(id);
 });
+
+async function loadModels() {
+  try {
+    const response = await fetch('/api/models');
+    const payload = await response.json();
+    if (!response.ok) throw new Error(payload.error || `HTTP ${response.status}`);
+    const models = Array.isArray(payload?.models) ? payload.models : [];
+    renderModelChoices(models);
+  } catch (error) {
+    modelChoices.innerHTML = `<span class="field-note danger-text">模型加载失败：${escapeHtml(error.message)}</span>`;
+    modelProfiles = {};
+    modelInputs = [];
+    updateModelProfile();
+  }
+}
+
+function renderModelChoices(models) {
+  modelProfiles = {};
+  modelChoices.innerHTML = '';
+  if (!models.length) {
+    modelChoices.innerHTML = '<span class="field-note danger-text">没有可用模型，请检查后台模型路由配置。</span>';
+    modelInputs = [];
+    updateModelProfile();
+    return;
+  }
+  const fragment = document.createDocumentFragment();
+  for (const model of models) {
+    const id = String(model.id || '').trim();
+    if (!id) continue;
+    modelProfiles[id] = {
+      label: model.label || id,
+      sizes: Array.isArray(model.sizes) ? model.sizes : [],
+      qualities: Array.isArray(model.qualities) ? model.qualities : [],
+      formats: Array.isArray(model.formats) ? model.formats : [],
+      supportsEdit: Boolean(model.supports_edit),
+    };
+    const label = document.createElement('label');
+    label.className = 'check-card';
+    const input = document.createElement('input');
+    input.type = 'checkbox';
+    input.name = 'models';
+    input.value = id;
+    const span = document.createElement('span');
+    span.textContent = model.label || id;
+    label.append(input, span);
+    fragment.append(label);
+  }
+  modelChoices.append(fragment);
+  modelInputs = Array.from(document.querySelectorAll('input[name="models"]'));
+  updateModelProfile();
+  updateMode();
+}
 
 async function generateImage() {
   const siteKey = siteKeyInput.value.trim();
@@ -464,12 +500,21 @@ function formatElapsed(ms) {
 function updateKeyStatus(siteKeyInfo) {
   if (!siteKeyInfo) return;
   keyStatus.textContent = `当前 key 已用 ${siteKeyInfo.used}/${siteKeyInfo.limit} 次，剩余 ${siteKeyInfo.remaining} 次。`;
+  if (navKeyStatus) {
+    navKeyStatus.textContent = `剩余 ${siteKeyInfo.remaining} 次`;
+    navKeyStatus.className = `pill ${siteKeyInfo.remaining > 0 ? 'ok' : 'error'}`;
+  }
 }
 
 function updateMode() {
   const isEdit = modeInput.value === 'edit';
   imageUploadLabel.classList.toggle('hidden', !isEdit);
   sourceImageInput.required = isEdit && !inlineEditSource;
+  for (const input of modelInputs) {
+    const profile = modelProfiles[input.value];
+    input.disabled = isEdit && profile && !profile.supportsEdit;
+    if (input.disabled) input.checked = false;
+  }
   if (editSourceInfo) {
     editSourceInfo.classList.toggle('hidden', !(isEdit && inlineEditSource));
     editSourceInfo.textContent = inlineEditSource
@@ -480,6 +525,7 @@ function updateMode() {
     ? '描述你想如何修改上传的图片，例如：改成赛博朋克风格，保留主体。'
     : '描述你想生成的图片，例如：赛博朋克风格的猫，站在雨夜霓虹街道上。';
   generateBtn.textContent = isEdit ? '开始编辑' : '开始生成';
+  updateModelProfile();
 }
 
 function fileToPayload(file) {
@@ -544,6 +590,10 @@ async function refreshKeyStatus() {
   const siteKey = siteKeyInput.value.trim();
   if (!siteKey) {
     keyStatus.textContent = '请输入 key。';
+    if (navKeyStatus) {
+      navKeyStatus.textContent = '未输入 key';
+      navKeyStatus.className = 'pill';
+    }
     return;
   }
 
@@ -558,6 +608,10 @@ async function refreshKeyStatus() {
     updateKeyStatus(payload);
   } catch (error) {
     keyStatus.textContent = error.message;
+    if (navKeyStatus) {
+      navKeyStatus.textContent = 'key 无效';
+      navKeyStatus.className = 'pill error';
+    }
   }
 }
 
@@ -567,13 +621,31 @@ function updateModelProfile() {
   const allowedSizes = activeProfiles.length
     ? activeProfiles.reduce((sizes, profile) => sizes.filter((size) => profile.sizes.includes(size)), [...activeProfiles[0].sizes])
     : [];
+  const allowedQualities = activeProfiles.length
+    ? activeProfiles.reduce((items, profile) => items.filter((item) => profile.qualities.includes(item)), [...activeProfiles[0].qualities])
+    : [];
+  const allowedFormats = activeProfiles.length
+    ? activeProfiles.reduce((items, profile) => items.filter((item) => profile.formats.includes(item)), [...activeProfiles[0].formats])
+    : [];
 
   for (const option of sizeInput.options) {
     option.disabled = Boolean(allowedSizes.length) && !allowedSizes.includes(option.value);
   }
+  for (const option of qualityInput.options) {
+    option.disabled = Boolean(allowedQualities.length) && !allowedQualities.includes(option.value);
+  }
+  for (const option of outputFormatInput.options) {
+    option.disabled = Boolean(allowedFormats.length) && !allowedFormats.includes(option.value);
+  }
 
   if (allowedSizes.length && !allowedSizes.includes(sizeInput.value)) {
     sizeInput.value = allowedSizes.includes('1024x1024') ? '1024x1024' : allowedSizes[0];
+  }
+  if (allowedQualities.length && !allowedQualities.includes(qualityInput.value)) {
+    qualityInput.value = allowedQualities.includes('low') ? 'low' : allowedQualities[0];
+  }
+  if (allowedFormats.length && !allowedFormats.includes(outputFormatInput.value)) {
+    outputFormatInput.value = allowedFormats.includes('png') ? 'png' : allowedFormats[0];
   }
 
   updateCountOptions(selectedModels.length || 1);

@@ -1,0 +1,62 @@
+{
+  "models": [
+    {
+      "id": "gpt-image-2",
+      "label": "gpt-image-2",
+      "enabled": true,
+      "supports_edit": true,
+      "sizes": ["1024x1024", "1024x1536", "1536x1024", "auto"],
+      "qualities": ["low", "medium", "high", "auto"],
+      "formats": ["png", "jpeg", "webp"],
+      "providers": [
+        {
+          "id": "sub2api-image-main",
+          "enabled": true,
+          "priority": 10,
+          "protocol": "openai_images",
+          "base_url": "https://api.example.com",
+          "api_key": "replace-with-real-key",
+          "upstream_model": "gpt-image-2",
+          "supports_generate": true,
+          "supports_edit": true,
+          "headers_preset": null
+        },
+        {
+          "id": "backup-channel",
+          "enabled": false,
+          "priority": 20,
+          "protocol": "openai_images",
+          "base_url": "https://backup.example.com",
+          "api_key": "replace-with-real-key",
+          "upstream_model": "gpt-image-v2",
+          "supports_generate": true,
+          "supports_edit": false,
+          "headers_preset": "browser"
+        }
+      ]
+    },
+    {
+      "id": "seedream",
+      "label": "Seedream",
+      "enabled": true,
+      "supports_edit": false,
+      "sizes": ["1024x1024"],
+      "qualities": ["low", "medium", "high"],
+      "formats": ["png"],
+      "providers": [
+        {
+          "id": "seedream-channel",
+          "enabled": true,
+          "priority": 10,
+          "protocol": "openai_images",
+          "base_url": "https://api.example.com",
+          "api_key": "replace-with-real-key",
+          "upstream_model": "doubao-seedream-4-5-251128",
+          "supports_generate": true,
+          "supports_edit": false,
+          "headers_preset": "browser"
+        }
+      ]
+    }
+  ]
+}

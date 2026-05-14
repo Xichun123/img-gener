@@ -7,10 +7,21 @@ import base64
 import concurrent.futures
 import json
 import secrets
+import threading
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
 from typing import Dict, List, Optional, Tuple
+
+BROWSER_HEADERS = {
+    "User-Agent": (
+        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) "
+        "Chrome/125.0 Safari/537.36"
+    ),
+    "Accept": "application/json",
+}
 
 
 class UpstreamHTTPError(Exception):
@@ -23,6 +34,10 @@ class UpstreamHTTPError(Exception):
 # Global thread pool for upstream concurrency control
 _UPSTREAM_EXECUTOR = None
 _MAX_WORKERS = 4
+_PROVIDER_HEALTH_LOCK = threading.Lock()
+_PROVIDER_HEALTH = {}
+_PROVIDER_FAILURE_THRESHOLD = 3
+_PROVIDER_CIRCUIT_SECONDS = 300
 
 
 def init_executor(max_workers: int = 4):
@@ -51,10 +66,17 @@ def shutdown_executor(wait: bool = True):
 class UpstreamClient:
     """Base upstream client."""
 
-    def __init__(self, base_url: str, api_key: str, timeout: int = 600):
+    def __init__(
+        self,
+        base_url: str,
+        api_key: str,
+        timeout: int = 600,
+        extra_headers: Optional[Dict[str, str]] = None,
+    ):
         self.base_url = base_url.rstrip("/")
         self.api_key = api_key
         self.timeout = timeout
+        self.extra_headers = extra_headers or {}
 
     def generate(
         self,
@@ -78,6 +100,7 @@ class UpstreamClient:
             url,
             data=data,
             headers={
+                **self.extra_headers,
                 "Authorization": f"Bearer {self.api_key}",
                 "Content-Type": content_type,
             },
@@ -135,6 +158,7 @@ class OpenAIClient(UpstreamClient):
 
         return {
             "b64_json": data_items[0].get("b64_json"),
+            "url": data_items[0].get("url"),
             "revised_prompt": data_items[0].get("revised_prompt"),
         }
 
@@ -233,22 +257,41 @@ class GeminiClient(UpstreamClient):
         return None
 
 
+class OpenAIResponsesImageClient(UpstreamClient):
+    """Reserved adapter for Responses API image generation."""
+
+    def generate(
+        self,
+        model: str,
+        prompt: str,
+        size: str = "auto",
+        quality: str = "auto",
+        output_format: str = "png",
+        image: Optional[Dict] = None,
+        is_edit: bool = False,
+    ) -> Dict:
+        raise ValueError("openai_responses_image 协议已预留，但当前版本未启用。")
+
+
 def create_client(
     base_url: str,
     api_key: str,
     protocol: str = "openai",
     timeout: int = 600,
+    extra_headers: Optional[Dict[str, str]] = None,
 ) -> UpstreamClient:
-    if protocol == "gemini":
-        return GeminiClient(base_url, api_key, timeout)
-    elif protocol == "openai":
-        return OpenAIClient(base_url, api_key, timeout)
+    if protocol in {"gemini", "gemini_native"}:
+        return GeminiClient(base_url, api_key, timeout, extra_headers)
+    elif protocol in {"openai", "openai_images"}:
+        return OpenAIClient(base_url, api_key, timeout, extra_headers)
+    elif protocol == "openai_responses_image":
+        return OpenAIResponsesImageClient(base_url, api_key, timeout, extra_headers)
     else:
         raise ValueError(f"不支持的协议：{protocol}")
 
 
 def batch_generate(
-    model_client_map: Dict[str, UpstreamClient],
+    routes: Dict,
     tasks: List[Dict],
 ) -> Tuple[List[Dict], List[Dict]]:
     """
@@ -263,7 +306,7 @@ def batch_generate(
     """
     executor = get_executor()
     futures = [
-        executor.submit(_generate_single, model_client_map, task)
+        executor.submit(_generate_single, routes, task)
         for task in tasks
     ]
 
@@ -281,21 +324,83 @@ def batch_generate(
     return results, errors
 
 
-def _generate_single(model_client_map: Dict[str, UpstreamClient], task: Dict) -> Dict:
+def test_provider(provider: Dict, model_id: str, task: Dict) -> Dict:
+    return _call_provider(provider, model_id, task)
+
+
+def _generate_single(routes: Dict, task: Dict) -> Dict:
     model = task["model"]
     request_index = task["index"]
     order = task["order"]
+    is_edit = task.get("is_edit", False)
 
-    client = model_client_map.get(model)
-    if not client:
+    model_config = _find_model(routes, model)
+    if not model_config:
         return {
             "model": model, "index": request_index, "order": order,
-            "error": f"模型 {model} 没有对应的上游客户端。",
+            "error": f"模型 {model} 没有对应的路由配置。",
         }
 
+    providers = [
+        provider for provider in model_config.get("providers", [])
+        if provider.get("enabled") is not False
+        and ((is_edit and provider.get("supports_edit") is not False) or (not is_edit and provider.get("supports_generate") is not False))
+    ]
+    providers.sort(key=lambda item: int(item.get("priority", 100)))
+    if not providers:
+        return {
+            "model": model, "index": request_index, "order": order,
+            "error": f"模型 {model} 没有可用 provider。",
+        }
+
+    errors = []
+    for provider in providers:
+        if _provider_circuit_open(provider.get("id") or "provider"):
+            errors.append({
+                "provider_id": provider.get("id"),
+                "error": "provider 临时熔断中。",
+            })
+            continue
+        result = _call_provider(provider, model, task)
+        if result.get("error"):
+            _record_provider_failure(provider.get("id") or "provider")
+            errors.append({
+                "provider_id": provider.get("id"),
+                "error": result.get("error"),
+            })
+            continue
+        _record_provider_success(provider.get("id") or "provider")
+        result["fallback_errors"] = errors
+        return result
+
+    return {
+        "model": model,
+        "index": request_index,
+        "order": order,
+        "error": "所有 provider 均失败。",
+        "provider_errors": errors,
+    }
+
+
+def _find_model(routes: Dict, model_id: str) -> Optional[Dict]:
+    for model in routes.get("models", []):
+        if model.get("id") == model_id and model.get("enabled") is not False:
+            return model
+    return None
+
+
+def _call_provider(provider: Dict, stable_model_id: str, task: Dict) -> Dict:
+    provider_id = provider.get("id") or "provider"
     try:
+        client = create_client(
+            base_url=provider.get("base_url", ""),
+            api_key=provider.get("api_key", ""),
+            protocol=provider.get("protocol", "openai_images"),
+            timeout=int(provider.get("timeout", _MAX_WORKERS * 150)),
+            extra_headers=_provider_headers(provider),
+        )
         result = client.generate(
-            model=model,
+            model=provider.get("upstream_model") or stable_model_id,
             prompt=task["prompt"],
             size=task.get("size", "auto"),
             quality=task.get("quality", "auto"),
@@ -303,28 +408,72 @@ def _generate_single(model_client_map: Dict[str, UpstreamClient], task: Dict) ->
             image=task.get("image"),
             is_edit=task.get("is_edit", False),
         )
+        if not result.get("b64_json") and not result.get("url"):
+            raise ValueError("接口没有返回图片数据。")
         return {
-            "model": model,
-            "result_index": request_index,
-            "order": order,
-            "b64_json": result["b64_json"],
+            "model": stable_model_id,
+            "provider_id": provider_id,
+            "result_index": task["index"],
+            "order": task["order"],
+            "b64_json": result.get("b64_json"),
+            "url": result.get("url"),
             "revised_prompt": result.get("revised_prompt"),
         }
     except UpstreamHTTPError as error:
         return {
-            "model": model, "index": request_index, "order": order,
+            "model": stable_model_id, "index": task["index"], "order": task["order"],
+            "provider_id": provider_id,
             "error": f"上游请求失败：{error}",
         }
     except ValueError as error:
         return {
-            "model": model, "index": request_index, "order": order,
+            "model": stable_model_id, "index": task["index"], "order": task["order"],
+            "provider_id": provider_id,
             "error": str(error),
         }
     except Exception as error:
         return {
-            "model": model, "index": request_index, "order": order,
+            "model": stable_model_id, "index": task["index"], "order": task["order"],
+            "provider_id": provider_id,
             "error": f"上游请求失败：{error}",
         }
+
+
+def _provider_headers(provider: Dict) -> Optional[Dict[str, str]]:
+    if provider.get("headers_preset") == "browser":
+        return BROWSER_HEADERS
+    return None
+
+
+def _provider_circuit_open(provider_id: str) -> bool:
+    with _PROVIDER_HEALTH_LOCK:
+        state = _PROVIDER_HEALTH.get(provider_id)
+        if not state:
+            return False
+        until = state.get("open_until", 0)
+        if until and until > time.time():
+            return True
+        if until:
+            _PROVIDER_HEALTH.pop(provider_id, None)
+        return False
+
+
+def _record_provider_success(provider_id: str):
+    with _PROVIDER_HEALTH_LOCK:
+        _PROVIDER_HEALTH.pop(provider_id, None)
+
+
+def _record_provider_failure(provider_id: str):
+    with _PROVIDER_HEALTH_LOCK:
+        state = _PROVIDER_HEALTH.setdefault(provider_id, {"failures": 0, "open_until": 0})
+        state["failures"] = int(state.get("failures", 0)) + 1
+        if state["failures"] >= _PROVIDER_FAILURE_THRESHOLD:
+            state["open_until"] = time.time() + _PROVIDER_CIRCUIT_SECONDS
+
+
+def clear_provider_health():
+    with _PROVIDER_HEALTH_LOCK:
+        _PROVIDER_HEALTH.clear()
 
 
 def _extract_error(payload: Dict) -> Optional[str]:

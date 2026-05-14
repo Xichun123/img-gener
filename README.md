@@ -14,11 +14,7 @@ Img Gener 是一个自托管 AI 生图网站。浏览器只填写你分发的网
 
 ## 支持模型
 
-当前内置模型：
-
-- `gpt-image-2`
-- `gemini-3-pro-image-preview`
-- `gemini-3.1-flash-image-preview`
+模型由运行时 `model-routes.json` 配置。前端显示稳定模型名，后端可以把同一个稳定模型映射到多个不同上游和不同真实模型 ID，并按优先级自动 fallback。
 
 当前内置尺寸：
 
@@ -52,6 +48,8 @@ PORT=5173
 UPSTREAM_BASE_URL=https://api.example.com
 UPSTREAM_API_KEY=replace-with-real-upstream-key
 SITE_KEYS_FILE=keys.json
+MODEL_ROUTES_FILE=model-routes.json
+ADMIN_TOKEN=replace-with-admin-token
 UPSTREAM_TIMEOUT=600
 ```
 
@@ -99,6 +97,22 @@ npm run keys
 - 设置可选过期时间
 
 `keys.json` 是运行时敏感文件，默认已写入 `.gitignore`，不要提交真实 Key 数据。
+
+## 模型路由管理
+
+复制配置模板：
+
+```bash
+cp model-routes.example.json model-routes.json
+```
+
+打开后台：
+
+```text
+http://127.0.0.1:5173/admin.html
+```
+
+使用 `.env` 中的 `ADMIN_TOKEN` 加载和保存配置。`model-routes.json` 可以为同一个前端模型配置多个 provider；provider 可使用不同 `base_url`、`api_key`、`upstream_model`、协议、优先级和浏览器请求头预设。生成时会按优先级尝试，某个 provider 失败后自动切换到下一个，全部失败才返回错误。
 
 ## 提示词图库同步
 
@@ -215,6 +229,8 @@ sudo journalctl -u img-gener-prompts-sync.service -n 100 --no-pager
 | `UPSTREAM_BASE_URL` | 无 | 上游 OpenAI-compatible API 地址 |
 | `UPSTREAM_API_KEY` | 无 | 真实上游 API Key |
 | `SITE_KEYS_FILE` | `keys.json` | 网站 Key 数据文件 |
+| `MODEL_ROUTES_FILE` | `model-routes.json` | 模型和上游 provider 路由配置文件 |
+| `ADMIN_TOKEN` | 空 | 后台管理和 `/api/admin/*` 的 Bearer Token |
 | `UPSTREAM_TIMEOUT` | `600` | 单个上游请求超时时间，单位秒 |
 | `ALLOWED_HOSTS` | 空（127.0.0.1/localhost/[::1] 始终允许）| 逗号分隔；反代部署时填上对外域名，例如 `img-gener.example.com` |
 | `ALLOWED_ORIGINS` | 空 | 跨域来源白名单，逗号分隔；同源访问无需配置 |
@@ -228,11 +244,14 @@ sudo journalctl -u img-gener-prompts-sync.service -n 100 --no-pager
 ```text
 .
 ├── app.js                         # 前端交互逻辑
+├── admin.html                     # 模型路由管理页
+├── admin.js                       # 模型路由管理逻辑
 ├── index.html                     # 生成页
 ├── gallery.html                   # 效果图图库页
 ├── prompt-gallery.js              # 图库点击填充逻辑
-├── prompt-templates.js            # 提示词模板数据
-├── prompt-cases.js                # 效果图案例数据
+├── prompt-templates.json          # 提示词模板数据
+├── prompt-cases.json              # 效果图案例数据
+├── model-routes.example.json      # 模型路由模板
 ├── case-thumbs/                   # 本地 WebP 效果图缩略图
 ├── server.py                      # Python 后端代理
 ├── scripts/key_manager.py         # 网站 Key 管理脚本
@@ -246,6 +265,7 @@ sudo journalctl -u img-gener-prompts-sync.service -n 100 --no-pager
 
 - 不要提交 `.env`。
 - 不要提交真实 `keys.json`。
+- 不要提交真实 `model-routes.json`，其中可能包含上游 API Key。
 - 不要把真实上游 API Key 写进前端代码。
 - 网站 Key 只能限制本站使用次数，不能替代上游账单限制。
 - 公开部署时建议配合 CDN / WAF / 反代限流。

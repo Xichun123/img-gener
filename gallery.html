@@ -3,34 +3,72 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>效果图图库 · Img Gener</title>
+  <title>案例图库 · Img Gener</title>
   <link rel="icon" href="favicon.ico" sizes="any">
   <link rel="icon" type="image/png" href="favicon.png">
   <link rel="apple-touch-icon" href="apple-touch-icon.png">
   <link rel="manifest" href="manifest.webmanifest">
-  <meta name="theme-color" content="#7c5cff">
+  <meta name="theme-color" content="#faf9f5">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:wght@400;500;600&family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="styles.css">
 </head>
 <body>
-  <main class="app-shell gallery-shell">
-    <section class="hero gallery-hero">
-      <div>
-        <h1>效果图图库</h1>
-        <p class="gallery-subtitle">点击任意效果图，会自动填入对应提示词并返回生成页。</p>
+  <header class="topnav">
+    <div class="topnav-inner">
+      <a class="brand" href="index.html" aria-label="Img Gener 首页">
+        <svg class="brand-mark" viewBox="0 0 16 16" aria-hidden="true" focusable="false">
+          <path fill="currentColor" d="M8 0 9.2 6.8 16 8 9.2 9.2 8 16 6.8 9.2 0 8 6.8 6.8z"/>
+        </svg>
+        <span>Img Gener</span>
+      </a>
+      <nav class="topnav-nav" aria-label="主导航">
+        <a class="topnav-link" href="index.html">生成</a>
+        <a class="topnav-link is-active" href="gallery.html">案例图库</a>
+        <a class="topnav-link" href="admin.html">管理</a>
+      </nav>
+      <span class="topnav-spacer"></span>
+      <div class="topnav-actions">
+        <a class="ghost-btn small-btn" href="index.html">返回生成台</a>
       </div>
-      <a class="ghost-btn" href="index.html">返回生成页</a>
+    </div>
+  </header>
+
+  <main class="shell">
+    <section class="hero">
+      <div class="hero-text">
+        <span class="eyebrow">Inspiration Gallery</span>
+        <h1 class="display-xl">先看见，再创造。</h1>
+        <p class="lead">点击任意效果图，自动填入对应提示词并跳回生成台。支持按标题、分类、关键词搜索。</p>
+      </div>
     </section>
 
-    <section class="panel gallery-panel">
-      <div class="gallery-toolbar">
-        <input id="caseSearch" type="search" placeholder="搜索：标题 / 提示词 / 来源" aria-label="搜索效果图">
-        <div id="caseCategories" class="category-chips" role="tablist" aria-label="分类筛选"></div>
-        <span id="caseCount" class="gallery-count" aria-live="polite"></span>
-      </div>
-      <div id="caseGallery" class="gallery-page-grid" aria-label="效果图图库"></div>
-      <div id="caseSentinel" class="gallery-sentinel" aria-hidden="true"></div>
+    <section class="gallery-toolbar" aria-label="筛选与搜索">
+      <input id="caseSearch" type="search" placeholder="搜索：标题 / 提示词 / 来源" aria-label="搜索效果图">
+      <div id="caseCategories" class="category-chips" role="tablist" aria-label="分类筛选"></div>
+      <span id="caseCount" class="gallery-count" aria-live="polite"></span>
     </section>
+
+    <section class="gallery-page-grid" id="caseGallery" aria-label="效果图图库"></section>
+    <div id="caseSentinel" class="gallery-sentinel" aria-hidden="true"></div>
   </main>
+
+  <footer class="footer">
+    <div class="footer-inner">
+      <a class="brand" href="index.html" aria-label="Img Gener">
+        <svg class="brand-mark" viewBox="0 0 16 16" aria-hidden="true" focusable="false">
+          <path fill="currentColor" d="M8 0 9.2 6.8 16 8 9.2 9.2 8 16 6.8 9.2 0 8 6.8 6.8z"/>
+        </svg>
+        <span>Img Gener</span>
+      </a>
+      <small>本地优先 · 自托管 · 多上游路由</small>
+      <div class="footer-links">
+        <a href="index.html">生成</a>
+        <a href="admin.html">管理</a>
+      </div>
+    </div>
+  </footer>
 
   <script src="prompt-gallery.js"></script>
 </body>

@@ -13,11 +13,14 @@ import upstream_client
 ROOT = pathlib.Path(__file__).resolve().parent
 PORT = int(os.environ.get("PORT", "5173"))
 KEYS_FILE = ROOT / os.environ.get("SITE_KEYS_FILE", "keys.json")
+MODEL_ROUTES_FILE = ROOT / os.environ.get("MODEL_ROUTES_FILE", "model-routes.json")
 PUBLIC_FILES = {
     "/index.html",
+    "/admin.html",
     "/gallery.html",
     "/styles.css",
     "/app.js",
+    "/admin.js",
     "/prompt-gallery.js",
     "/prompt-templates.json",
     "/prompt-cases.json",
@@ -32,16 +35,7 @@ MAX_BODY_BYTES = 28 * 1024 * 1024
 
 mimetypes.add_type("application/manifest+json", ".webmanifest")
 
-ALLOWED_MODELS = {
-    "gpt-image-2",
-    "gemini-3-pro-image-preview",
-    "gemini-3.1-flash-image-preview",
-}
-GEMINI_IMAGE_MODELS = {
-    "gemini-3-pro-image-preview",
-    "gemini-3.1-flash-image-preview",
-}
-ALLOWED_SIZES = {
+DEFAULT_SIZES = [
     "auto",
     "1024x1024",
     "1024x1536",
@@ -53,9 +47,10 @@ ALLOWED_SIZES = {
     "3072x2048",
     "3840x2160",
     "2160x3840",
-}
-ALLOWED_QUALITIES = {"low", "medium", "high", "auto"}
-ALLOWED_FORMATS = {"png", "jpeg", "webp"}
+]
+DEFAULT_QUALITIES = ["low", "medium", "high", "auto"]
+DEFAULT_FORMATS = ["png", "jpeg", "webp"]
+SUPPORTED_PROTOCOLS = {"openai_images", "gemini_native", "openai_responses_image"}
 MAX_IMAGES_PER_MODEL = 4
 MAX_TOTAL_IMAGES = 6
 MAX_CONCURRENT_UPSTREAM = 4
@@ -78,6 +73,7 @@ UPSTREAM_BASE_URL = os.environ.get("UPSTREAM_BASE_URL")
 UPSTREAM_API_KEY = os.environ.get("UPSTREAM_API_KEY")
 UPSTREAM_TIMEOUT = int(os.environ.get("UPSTREAM_TIMEOUT", "600"))
 UPSTREAM_PROTOCOL = os.environ.get("UPSTREAM_PROTOCOL", "openai")
+ADMIN_TOKEN = os.environ.get("ADMIN_TOKEN", "")
 
 
 def _split_env_set(name):
@@ -92,6 +88,7 @@ ALLOWED_HOSTS = _split_env_set("ALLOWED_HOSTS") | {
 }
 ALLOWED_ORIGINS = _split_env_set("ALLOWED_ORIGINS")
 _KEYS_LOCK = threading.Lock()
+_ROUTES_LOCK = threading.Lock()
 
 
 class Handler(http.server.BaseHTTPRequestHandler):
@@ -108,6 +105,12 @@ class Handler(http.server.BaseHTTPRequestHandler):
         if not self._check_host():
             return
         parsed = urllib.parse.urlparse(self.path)
+        if parsed.path == "/api/models":
+            self.handle_models()
+            return
+        if parsed.path == "/api/admin/model-routes":
+            self.handle_admin_get_routes()
+            return
         if parsed.path.startswith("/api/"):
             self.send_json(405, {"error": "Method not allowed"})
             return
@@ -124,7 +127,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
             return
         self.send_response(204)
         if self.send_cors_headers():
-            self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+            self.send_header("Access-Control-Allow-Methods", "GET, POST, PUT, OPTIONS")
             self.send_header("Access-Control-Allow-Headers", "Content-Type, Authorization")
             self.send_header("Access-Control-Max-Age", "86400")
         self.end_headers()
@@ -142,13 +145,24 @@ class Handler(http.server.BaseHTTPRequestHandler):
         if parsed.path == "/api/key-status":
             self.handle_key_status()
             return
+        if parsed.path == "/api/admin/test-provider":
+            self.handle_admin_test_provider()
+            return
+        if parsed.path == "/api/admin/provider-health/reset":
+            self.handle_admin_reset_provider_health()
+            return
+        self.send_json(404, {"error": "Not found"})
+
+    def do_PUT(self):
+        if not self._check_host():
+            return
+        parsed = urllib.parse.urlparse(self.path)
+        if parsed.path == "/api/admin/model-routes":
+            self.handle_admin_put_routes()
+            return
         self.send_json(404, {"error": "Not found"})
 
     def handle_image_request(self, upstream_path):
-        if not UPSTREAM_BASE_URL or not UPSTREAM_API_KEY:
-            self.send_json(500, {"error": "上游配置缺失。"})
-            return
-
         body = self.read_json_body()
         if body is None:
             return
@@ -162,6 +176,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
         output_format = str(body.get("output_format", "")).strip()
         image = body.get("image") if isinstance(body.get("image"), dict) else None
         is_edit = upstream_path.endswith("/edits")
+        routes = get_model_routes()
+        model_map = build_model_map(routes)
 
         if not site_key:
             self.send_json(401, {"error": "请输入 key。"})
@@ -169,7 +185,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
         if not prompt:
             self.send_json(400, {"error": "请输入提示词。"})
             return
-        if not models or any(model not in ALLOWED_MODELS for model in models):
+        if not models or any(model not in model_map for model in models):
             self.send_json(400, {"error": "不支持的模型。"})
             return
         if not n or n < 1 or n > MAX_IMAGES_PER_MODEL:
@@ -179,14 +195,17 @@ class Handler(http.server.BaseHTTPRequestHandler):
         if total_requested > MAX_TOTAL_IMAGES:
             self.send_json(400, {"error": f"单次最多生成 {MAX_TOTAL_IMAGES} 张，请减少模型或数量。"})
             return
-        if size not in ALLOWED_SIZES:
+        if any(size not in model_map[model].get("sizes", []) for model in models):
             self.send_json(400, {"error": "不支持的尺寸。"})
             return
-        if quality not in ALLOWED_QUALITIES:
+        if any(quality not in model_map[model].get("qualities", []) for model in models):
             self.send_json(400, {"error": "不支持的质量。"})
             return
-        if output_format not in ALLOWED_FORMATS:
+        if any(output_format not in model_map[model].get("formats", []) for model in models):
             self.send_json(400, {"error": "不支持的输出格式。"})
+            return
+        if is_edit and any(not model_map[model].get("supports_edit", False) for model in models):
+            self.send_json(400, {"error": "所选模型不支持图生图 / 图片编辑。"})
             return
         if is_edit and not image:
             self.send_json(400, {"error": "请上传图片。"})
@@ -209,7 +228,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 })
 
         try:
-            results, errors = upstream_client.batch_generate(MODEL_CLIENT_MAP, tasks)
+            results, errors = upstream_client.batch_generate(routes, tasks)
         except Exception:
             adjust_key_usage(site_key, -total_requested)
             raise
@@ -240,6 +259,89 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 "limit": reserved["limit"],
             },
         })
+
+    def handle_models(self):
+        self.send_json(200, {"models": public_models(get_model_routes())})
+
+    def handle_admin_get_routes(self):
+        if not self.require_admin():
+            return
+        self.send_json(200, redact_routes(get_model_routes()))
+
+    def handle_admin_put_routes(self):
+        if not self.require_admin():
+            return
+        body = self.read_json_body()
+        if body is None:
+            return
+        try:
+            routes = validate_model_routes(body, allow_masked_keys=True)
+            current = get_model_routes()
+            routes = merge_masked_api_keys(current, routes)
+            save_model_routes(routes)
+            upstream_client.clear_provider_health()
+        except ValueError as error:
+            self.send_json(400, {"error": str(error)})
+            return
+        self.send_json(200, redact_routes(routes))
+
+    def handle_admin_test_provider(self):
+        if not self.require_admin():
+            return
+        body = self.read_json_body()
+        if body is None:
+            return
+        provider = body.get("provider")
+        prompt = str(body.get("prompt") or "A simple red square icon on a white background.").strip()
+        if not isinstance(provider, dict):
+            self.send_json(400, {"error": "provider 配置缺失。"})
+            return
+        try:
+            provider = validate_provider(provider, allow_masked_key=False)
+            from time import monotonic
+            started = monotonic()
+            result = upstream_client.test_provider(provider, str(body.get("model_id") or "test-model"), {
+                "prompt": prompt,
+                "size": str(body.get("size") or "1024x1024"),
+                "quality": str(body.get("quality") or "low"),
+                "output_format": str(body.get("output_format") or "png"),
+                "image": body.get("image") if isinstance(body.get("image"), dict) else None,
+                "is_edit": bool(body.get("is_edit")),
+                "index": 1,
+                "order": 1,
+            })
+        except ValueError as error:
+            self.send_json(400, {"error": str(error)})
+            return
+        if result.get("error"):
+            self.send_json(200, {"ok": False, "elapsed": round(monotonic() - started, 1), "error": result["error"]})
+            return
+        self.send_json(200, {
+            "ok": True,
+            "elapsed": round(monotonic() - started, 1),
+            "has_b64_json": bool(result.get("b64_json")),
+            "has_url": bool(result.get("url")),
+            "provider_id": provider["id"],
+        })
+
+    def handle_admin_reset_provider_health(self):
+        if not self.require_admin():
+            return
+        upstream_client.clear_provider_health()
+        self.send_json(200, {"ok": True})
+
+    def require_admin(self):
+        if not ADMIN_TOKEN:
+            self.send_json(503, {"error": "ADMIN_TOKEN 未配置。"})
+            return False
+        auth = self.headers.get("Authorization", "")
+        if not auth.startswith("Bearer "):
+            self.send_json(401, {"error": "缺少管理 Token。"})
+            return False
+        if auth.removeprefix("Bearer ").strip() != ADMIN_TOKEN:
+            self.send_json(403, {"error": "管理 Token 不正确。"})
+            return False
+        return True
 
     def handle_key_status(self):
         body = self.read_json_body()
@@ -356,24 +458,210 @@ def parse_count(value):
         return 0
 
 
-def _init_model_client_map():
-    """Build model -> UpstreamClient mapping at startup."""
-    protocol_clients = {}
-    model_map = {}
-    for model in ALLOWED_MODELS:
-        protocol = "gemini" if model in GEMINI_IMAGE_MODELS else "openai"
-        if protocol not in protocol_clients:
-            protocol_clients[protocol] = upstream_client.create_client(
-                base_url=UPSTREAM_BASE_URL,
-                api_key=UPSTREAM_API_KEY,
-                protocol=protocol,
-                timeout=UPSTREAM_TIMEOUT,
-            )
-        model_map[model] = protocol_clients[protocol]
-    return model_map
+def get_model_routes():
+    with _ROUTES_LOCK:
+        return load_model_routes()
 
 
-MODEL_CLIENT_MAP = _init_model_client_map()
+def load_model_routes():
+    if MODEL_ROUTES_FILE.exists():
+        payload = json.loads(MODEL_ROUTES_FILE.read_text(encoding="utf-8"))
+        return validate_model_routes(payload)
+    return validate_model_routes(default_model_routes())
+
+
+def save_model_routes(routes):
+    payload = json.dumps(validate_model_routes(routes), ensure_ascii=False, indent=2) + "\n"
+    tmp = MODEL_ROUTES_FILE.with_suffix(MODEL_ROUTES_FILE.suffix + ".tmp")
+    tmp.write_text(payload, encoding="utf-8")
+    os.replace(tmp, MODEL_ROUTES_FILE)
+
+
+def default_model_routes():
+    providers = []
+    if UPSTREAM_BASE_URL and UPSTREAM_API_KEY:
+        providers.append({
+            "id": "default-openai",
+            "enabled": True,
+            "priority": 10,
+            "protocol": UPSTREAM_PROTOCOL if UPSTREAM_PROTOCOL in SUPPORTED_PROTOCOLS else "openai_images",
+            "base_url": UPSTREAM_BASE_URL,
+            "api_key": UPSTREAM_API_KEY,
+            "upstream_model": "gpt-image-2",
+            "supports_generate": True,
+            "supports_edit": True,
+            "headers_preset": None,
+        })
+    return {
+        "models": [{
+            "id": "gpt-image-2",
+            "label": "gpt-image-2",
+            "enabled": True,
+            "supports_edit": True,
+            "sizes": DEFAULT_SIZES,
+            "qualities": DEFAULT_QUALITIES,
+            "formats": DEFAULT_FORMATS,
+            "providers": providers,
+        }]
+    }
+
+
+def build_model_map(routes):
+    return {
+        model["id"]: model
+        for model in routes.get("models", [])
+        if model.get("enabled") is True
+    }
+
+
+def public_models(routes):
+    models = []
+    for model in routes.get("models", []):
+        if model.get("enabled") is not True:
+            continue
+        if not enabled_providers(model):
+            continue
+        models.append({
+            "id": model["id"],
+            "label": model.get("label") or model["id"],
+            "supports_edit": bool(model.get("supports_edit")),
+            "sizes": model.get("sizes", DEFAULT_SIZES),
+            "qualities": model.get("qualities", DEFAULT_QUALITIES),
+            "formats": model.get("formats", DEFAULT_FORMATS),
+        })
+    return models
+
+
+def enabled_providers(model):
+    providers = [
+        provider for provider in model.get("providers", [])
+        if provider.get("enabled") is True
+    ]
+    return sorted(providers, key=lambda item: int(item.get("priority", 100)))
+
+
+def validate_model_routes(payload, allow_masked_keys=False):
+    if not isinstance(payload, dict):
+        raise ValueError("模型路由配置必须是 JSON 对象。")
+    raw_models = payload.get("models")
+    if not isinstance(raw_models, list):
+        raise ValueError("models 必须是数组。")
+    seen_models = set()
+    models = []
+    for raw_model in raw_models:
+        if not isinstance(raw_model, dict):
+            raise ValueError("models 内每一项必须是对象。")
+        model_id = clean_required_string(raw_model, "id", "模型 id")
+        if model_id in seen_models:
+            raise ValueError(f"模型 id 重复：{model_id}")
+        seen_models.add(model_id)
+        providers = raw_model.get("providers")
+        if not isinstance(providers, list) or not providers:
+            raise ValueError(f"模型 {model_id} 至少需要一个 provider。")
+        seen_providers = set()
+        clean_providers = []
+        for provider in providers:
+            clean_provider = validate_provider(provider, allow_masked_key=allow_masked_keys)
+            if clean_provider["id"] in seen_providers:
+                raise ValueError(f"模型 {model_id} 的 provider id 重复：{clean_provider['id']}")
+            seen_providers.add(clean_provider["id"])
+            clean_providers.append(clean_provider)
+        models.append({
+            "id": model_id,
+            "label": str(raw_model.get("label") or model_id).strip(),
+            "enabled": raw_model.get("enabled") is not False,
+            "supports_edit": bool(raw_model.get("supports_edit", True)),
+            "sizes": clean_string_list(raw_model.get("sizes"), DEFAULT_SIZES, f"模型 {model_id} sizes"),
+            "qualities": clean_string_list(raw_model.get("qualities"), DEFAULT_QUALITIES, f"模型 {model_id} qualities"),
+            "formats": clean_string_list(raw_model.get("formats"), DEFAULT_FORMATS, f"模型 {model_id} formats"),
+            "providers": clean_providers,
+        })
+    return {"models": models}
+
+
+def validate_provider(provider, allow_masked_key=False):
+    if not isinstance(provider, dict):
+        raise ValueError("provider 必须是对象。")
+    provider_id = clean_required_string(provider, "id", "provider id")
+    protocol = clean_required_string(provider, "protocol", f"provider {provider_id} protocol")
+    if protocol not in SUPPORTED_PROTOCOLS:
+        raise ValueError(f"provider {provider_id} 协议不支持：{protocol}")
+    base_url = clean_required_string(provider, "base_url", f"provider {provider_id} base_url")
+    api_key = clean_required_string(provider, "api_key", f"provider {provider_id} api_key")
+    if not allow_masked_key and is_masked_secret(api_key):
+        raise ValueError(f"provider {provider_id} api_key 不能是脱敏值。")
+    upstream_model = clean_required_string(provider, "upstream_model", f"provider {provider_id} upstream_model")
+    headers_preset = provider.get("headers_preset")
+    if headers_preset not in (None, "", "browser"):
+        raise ValueError(f"provider {provider_id} headers_preset 不支持：{headers_preset}")
+    try:
+        priority = int(provider.get("priority", 100))
+    except (TypeError, ValueError):
+        raise ValueError(f"provider {provider_id} priority 必须是整数。")
+    return {
+        "id": provider_id,
+        "enabled": provider.get("enabled") is not False,
+        "priority": priority,
+        "protocol": protocol,
+        "base_url": base_url,
+        "api_key": api_key,
+        "upstream_model": upstream_model,
+        "supports_generate": provider.get("supports_generate") is not False,
+        "supports_edit": provider.get("supports_edit") is not False,
+        "headers_preset": headers_preset or None,
+    }
+
+
+def clean_required_string(mapping, key, label):
+    value = mapping.get(key)
+    if not isinstance(value, str) or not value.strip():
+        raise ValueError(f"{label} 不能为空。")
+    return value.strip()
+
+
+def clean_string_list(value, default, label):
+    if value is None:
+        return list(default)
+    if not isinstance(value, list) or not value:
+        raise ValueError(f"{label} 必须是非空字符串数组。")
+    cleaned = []
+    for item in value:
+        if not isinstance(item, str) or not item.strip():
+            raise ValueError(f"{label} 必须是非空字符串数组。")
+        text = item.strip()
+        if text not in cleaned:
+            cleaned.append(text)
+    return cleaned
+
+
+def redact_routes(routes):
+    redacted = json.loads(json.dumps(routes, ensure_ascii=False))
+    for model in redacted.get("models", []):
+        for provider in model.get("providers", []):
+            provider["api_key"] = mask_secret(provider.get("api_key", ""))
+    return redacted
+
+
+def merge_masked_api_keys(current, incoming):
+    current_keys = {}
+    for model in current.get("models", []):
+        for provider in model.get("providers", []):
+            current_keys[(model.get("id"), provider.get("id"))] = provider.get("api_key", "")
+    for model in incoming.get("models", []):
+        for provider in model.get("providers", []):
+            if is_masked_secret(provider.get("api_key", "")):
+                provider["api_key"] = current_keys.get((model.get("id"), provider.get("id")), provider["api_key"])
+    return incoming
+
+
+def mask_secret(value):
+    if not value:
+        return ""
+    return f"***{value[-6:]}" if len(value) > 6 else "***"
+
+
+def is_masked_secret(value):
+    return isinstance(value, str) and value.startswith("***")
 
 
 def load_keys():

@@ -39,7 +39,7 @@ loginForm.addEventListener('submit', async (event) => {
   await attemptLogin(loginTokenInput.value.trim());
 });
 logoutBtn.addEventListener('click', () => {
-  localStorage.removeItem(ADMIN_SESSION_KEY);
+  sessionStorage.removeItem(ADMIN_SESSION_KEY);
   sessionToken = '';
   loaded = false;
   routes = { models: [] };
@@ -99,12 +99,12 @@ async function bootstrap() {
 
 function readSession() {
   try {
-    const raw = localStorage.getItem(ADMIN_SESSION_KEY);
+    const raw = sessionStorage.getItem(ADMIN_SESSION_KEY);
     if (!raw) return null;
     const parsed = JSON.parse(raw);
     if (!parsed?.token || !parsed?.expiresAt) return null;
     if (parsed.expiresAt <= Date.now()) {
-      localStorage.removeItem(ADMIN_SESSION_KEY);
+      sessionStorage.removeItem(ADMIN_SESSION_KEY);
       return null;
     }
     return parsed;
@@ -114,7 +114,7 @@ function readSession() {
 }
 
 function writeSession(token) {
-  localStorage.setItem(ADMIN_SESSION_KEY, JSON.stringify({
+  sessionStorage.setItem(ADMIN_SESSION_KEY, JSON.stringify({
     token,
     expiresAt: Date.now() + SESSION_TTL_MS,
   }));
@@ -190,7 +190,7 @@ async function loadRoutes() {
   } catch (error) {
     setState(error.message, 'error');
     if (/401|403/.test(error.message)) {
-      localStorage.removeItem(ADMIN_SESSION_KEY);
+      sessionStorage.removeItem(ADMIN_SESSION_KEY);
       sessionToken = '';
       showGate();
       toast('登录已过期，请重新登录', 'error');

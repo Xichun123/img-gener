@@ -156,6 +156,14 @@ class Handler(http.server.BaseHTTPRequestHandler):
     def do_PUT(self):
         if not self._check_host():
             return
+
+        # Reject oversized payloads
+        MAX_PAYLOAD_SIZE = 10 * 1024 * 1024  # 10MB
+        length = int(self.headers.get("Content-Length", 0))
+        if length > MAX_PAYLOAD_SIZE:
+            self.send_json(413, {"error": "Payload too large"})
+            return
+
         parsed = urllib.parse.urlparse(self.path)
         if parsed.path == "/api/admin/model-routes":
             self.handle_admin_put_routes()
@@ -654,14 +662,17 @@ def merge_masked_api_keys(current, incoming):
     return incoming
 
 
+MASKED_PLACEHOLDER = "***MASKED***"
+
+
 def mask_secret(value):
     if not value:
         return ""
-    return f"***{value[-6:]}" if len(value) > 6 else "***"
+    return MASKED_PLACEHOLDER
 
 
 def is_masked_secret(value):
-    return isinstance(value, str) and value.startswith("***")
+    return value == MASKED_PLACEHOLDER
 
 
 def load_keys():

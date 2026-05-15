@@ -1062,6 +1062,15 @@ body.lightbox-open {
   height: 100%;
   object-fit: cover;
   display: block;
+  cursor: zoom-in;
+}
+.history-card-missing {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  color: var(--muted);
+  font-size: 12px;
 }
 .history-card-delete {
   position: absolute;

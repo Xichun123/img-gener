@@ -820,17 +820,21 @@ function saveHistory(items) {
 
 async function addHistoryEntries(images) {
   if (!images?.length) return;
-  const entries = await Promise.all(images.map(async (item) => ({
-    id: item.id || crypto.randomUUID(),
-    prompt: item.prompt,
-    model: item.model,
-    size: item.size,
-    quality: item.quality,
-    outputFormat: item.outputFormat,
-    mode: item.mode,
-    createdAt: item.createdAt,
-    thumb: await makeThumb(item.imageData, HISTORY_THUMB),
-  })));
+  const entries = await Promise.all(images.map(async (item) => {
+    const thumb = await makeThumb(item.imageData, HISTORY_THUMB);
+    return {
+      id: item.id || crypto.randomUUID(),
+      prompt: item.prompt,
+      model: item.model,
+      size: item.size,
+      quality: item.quality,
+      outputFormat: item.outputFormat,
+      mode: item.mode,
+      createdAt: item.createdAt,
+      imageData: item.imageData,
+      thumb: thumb || item.imageData,
+    };
+  }));
   const next = [...entries, ...loadHistory()].slice(0, HISTORY_MAX);
   saveHistory(next);
   renderHistory(next);
@@ -875,9 +879,11 @@ function renderHistory(items) {
     card.className = 'history-card';
     card.dataset.id = entry.id;
     const time = formatHistoryDate(entry.createdAt);
+    const previewSrc = entry.thumb || entry.imageData || '';
+    const previewName = `history-${entry.id.slice(0, 8)}.${entry.outputFormat || 'png'}`;
     card.innerHTML = `
       <div class="history-card-thumb">
-        ${entry.thumb ? `<img src="${escapeHtml(entry.thumb)}" alt="${escapeHtml(entry.prompt || '')}" loading="lazy" data-preview-src="${escapeHtml(entry.thumb)}" data-preview-caption="${escapeHtml(entry.model || '历史图片')}" data-preview-download="history-${escapeHtml(entry.id.slice(0, 8))}.webp">` : ''}
+        ${previewSrc ? `<img src="${escapeHtml(previewSrc)}" alt="${escapeHtml(entry.prompt || '')}" loading="lazy" data-preview-src="${escapeHtml(previewSrc)}" data-preview-caption="${escapeHtml(entry.model || '历史图片')}" data-preview-download="${escapeHtml(previewName)}">` : '<span class="history-card-missing">无预览</span>'}
         <button type="button" class="history-card-delete" data-action="delete" aria-label="删除这一条">×</button>
       </div>
       <div class="history-card-body">
@@ -914,11 +920,12 @@ function fillFromHistory(id) {
 
 function useHistoryAsEdit(id) {
   const entry = loadHistory().find((item) => item.id === id);
-  if (!entry?.thumb) {
+  const source = entry?.imageData || entry?.thumb;
+  if (!source) {
     setState('该历史条目没有可用的预览。', 'error');
     return;
   }
-  setInlineEditSource(entry.thumb, `history-${entry.id.slice(0, 8)}.webp`);
+  setInlineEditSource(source, `history-${entry.id.slice(0, 8)}.${entry.outputFormat || 'png'}`);
   modeInput.value = 'edit';
   promptInput.value = entry.prompt || '';
   updateMode();

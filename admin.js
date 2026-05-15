@@ -28,17 +28,20 @@ const providerCardTemplate = document.querySelector('#providerCardTemplate');
 const toastHost = document.querySelector('#toastHost');
 
 const ADMIN_SESSION_KEY = 'img-gener.admin-session';
+const ADMIN_PROBE_JOBS_KEY = 'img-gener.probe-jobs';
 const SESSION_TTL_MS = 30 * 24 * 60 * 60 * 1000;
 const PROTOCOLS = ['openai_images', 'gemini_native', 'openai_responses_image'];
 const HEADER_PRESETS = ['', 'browser'];
 const PROBE_SIZES = ['auto', '1024x1024', '1024x1536', '1536x1024', '1792x1024', '1024x1792', '2048x2048', '2048x3072', '3072x2048', '3840x2160', '2160x3840'];
 const PROBE_QUALITIES = ['low', 'medium', 'high', 'auto'];
 const PROBE_FORMATS = ['png', 'jpeg', 'webp'];
+const PROBE_POLL_INTERVAL_MS = 5000;
 
 let routes = { models: [] };
 let loaded = false;
 let sessionToken = '';
 const expandedModels = new Set();
+const activeProbeJobs = new Map();
 
 loginForm.addEventListener('submit', async (event) => {
   event.preventDefault();
@@ -166,6 +169,7 @@ async function attemptLogin(token) {
     collapseAllBtn.disabled = false;
     expandedModels.clear();
     renderAll();
+    resumeStoredProbeJobs();
     setState('已加载', 'ok');
     showAdmin();
     toast(`登录成功，已加载 ${routes.models.length} 个模型`, 'ok');
@@ -191,6 +195,7 @@ async function loadRoutes() {
     collapseAllBtn.disabled = false;
     expandedModels.clear();
     renderAll();
+    resumeStoredProbeJobs();
     setState('已加载', 'ok');
     toast(`已加载 ${routes.models.length} 个模型`, 'ok');
   } catch (error) {
@@ -279,37 +284,42 @@ async function probeProvider(modelIndex, providerIndex) {
   const model = routes.models[modelIndex];
   const provider = model?.providers?.[providerIndex];
   if (!model || !provider) return;
-  if (typeof provider.api_key === 'string' && provider.api_key.startsWith('***')) {
-    toast('api_key 是脱敏值，请先保存配置再探测', 'error');
+  const jobKey = `${model.id}:${provider.id}`;
+  if (activeProbeJobs.has(jobKey)) {
+    toast('这个 provider 已有探测任务在运行', 'info');
     return;
   }
-  if (!confirm(`将对 provider "${provider.id}" 发起多次真实生图测试，用于探测尺寸、质量、格式和图生图能力。继续？`)) return;
+  if (!confirm(`将对 provider "${provider.id}" 发起后台生图探测，每次测试间隔约 1-2 分钟，完成后自动保存能力配置。继续？`)) return;
   testPanel.hidden = false;
-  testMeta.textContent = `模型 ${model.id} · provider ${provider.id} · 能力探测中...`;
+  testMeta.textContent = `模型 ${model.id} · provider ${provider.id} · 启动后台探测...`;
   testResult.textContent = '';
   resetProbeProgress(false);
   testPanel.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
   try {
-    const payload = await streamProbeProvider({
-      model_id: model.id,
-      provider,
-      sizes: PROBE_SIZES,
-      qualities: PROBE_QUALITIES,
-      formats: PROBE_FORMATS,
-      include_edit: true,
-      full_matrix: false,
-      stream: true,
-    }, (event) => updateProbeProgress(event, model, provider));
-    provider.capabilities = payload.capabilities;
-    provider.supports_generate = payload.capabilities.supports_generate;
-    provider.supports_edit = payload.capabilities.supports_edit;
-    routesEditor.value = JSON.stringify(routes, null, 2);
-    renderAll();
-    testMeta.textContent = `模型 ${model.id} · provider ${provider.id} · 探测完成 · ${payload.elapsed}s`;
-    testResult.textContent = JSON.stringify(payload, null, 2);
-    updateProbeProgress({ type: 'complete', ...payload }, model, provider);
-    toast(payload.ok ? `能力探测完成（${payload.elapsed}s）` : '探测完成，但未发现可用文生图能力', payload.ok ? 'ok' : 'error');
+    const job = await api('/api/admin/probe-provider/start', {
+      method: 'POST',
+      body: JSON.stringify({
+        model_id: model.id,
+        provider_id: provider.id,
+        sizes: PROBE_SIZES,
+        qualities: PROBE_QUALITIES,
+        formats: PROBE_FORMATS,
+        include_edit: true,
+        full_matrix: false,
+      }),
+    });
+    activeProbeJobs.set(jobKey, job.id);
+    storeProbeJob(jobKey, job.id, model.id, provider.id);
+    updateProbeProgress({
+      type: 'start',
+      total: job.total,
+      delay_range: job.delay_range,
+    }, model, provider);
+    appendProbeLog(`后台任务已启动 · ${job.id}`);
+    toast('后台探测已启动，可以关闭管理页面，完成后会自动保存', 'ok');
+    await pollProbeJob(job.id, model.id, provider.id, jobKey);
   } catch (error) {
+    activeProbeJobs.delete(jobKey);
     testMeta.textContent = `模型 ${model.id} · provider ${provider.id} · 探测错误`;
     testResult.textContent = error.message;
     probeProgressText.textContent = error.message;
@@ -317,44 +327,85 @@ async function probeProvider(modelIndex, providerIndex) {
   }
 }
 
-async function fetchProviderModels(modelIndex, providerIndex, node) {
-  const model = routes.models[modelIndex];
-  const provider = model?.providers?.[providerIndex];
-  if (!model || !provider) return;
-  if (typeof provider.api_key === 'string' && provider.api_key.startsWith('***')) {
-    toast('api_key 是脱敏值，请先保存配置再获取模型列表', 'error');
-    return;
-  }
-  const button = node.querySelector('[data-action="fetch-models"]');
-  const picker = node.querySelector('[data-role="model-picker"]');
-  if (!picker || !button) return;
-  button.disabled = true;
-  button.textContent = '获取中';
-  try {
-    const payload = await api('/api/admin/provider-models', {
-      method: 'POST',
-      body: JSON.stringify({ provider }),
-    });
-    renderModelPickerOptions(picker, payload.models || [], provider.upstream_model);
-    picker.hidden = false;
-    toast(`已获取 ${payload.models?.length || 0} 个模型`, 'ok');
-  } catch (error) {
-    toast(`获取模型失败：${error.message}`, 'error');
-  } finally {
-    button.disabled = false;
-    button.textContent = '获取';
+async function pollProbeJob(jobId, modelId, providerId, jobKey) {
+  let lastEventSeq = 0;
+  while (true) {
+    const job = await api(`/api/admin/probe-provider/job?id=${encodeURIComponent(jobId)}`);
+    const model = routes.models.find((item) => item.id === modelId) || { id: modelId };
+    const provider = model.providers?.find((item) => item.id === providerId) || { id: providerId };
+    const events = Array.isArray(job.events) ? job.events : [];
+    events
+      .filter((event) => Number(event.seq || 0) > lastEventSeq)
+      .forEach((event) => {
+        updateProbeProgress(event, model, provider);
+        lastEventSeq = Math.max(lastEventSeq, Number(event.seq || 0));
+      });
+    if (job.status === 'completed') {
+      const payload = events.findLast?.((event) => event.type === 'complete') || {
+        type: 'complete',
+        ok: job.capabilities?.supports_generate !== false,
+        elapsed: job.elapsed,
+        provider_id: providerId,
+        capabilities: job.capabilities,
+        saved: job.saved,
+      };
+      updateProbeProgress(payload, model, provider);
+      testMeta.textContent = `模型 ${modelId} · provider ${providerId} · 探测完成 · 已自动保存`;
+      testResult.textContent = JSON.stringify(job, null, 2);
+      activeProbeJobs.delete(jobKey);
+      removeStoredProbeJob(jobKey);
+      await loadRoutes();
+      toast(payload.ok ? `能力探测完成并已保存（${payload.elapsed}s）` : '探测完成并已保存，但未发现可用文生图能力', payload.ok ? 'ok' : 'error');
+      return job;
+    }
+    if (job.status === 'failed') {
+      activeProbeJobs.delete(jobKey);
+      removeStoredProbeJob(jobKey);
+      throw new Error(job.error || '能力探测失败');
+    }
+    await wait(PROBE_POLL_INTERVAL_MS);
   }
 }
 
-function renderModelPickerOptions(picker, models, currentValue) {
-  picker.innerHTML = '<option value="">选择模型 id</option>';
-  models.forEach((modelId) => {
-    const option = document.createElement('option');
-    option.value = modelId;
-    option.textContent = modelId;
-    picker.append(option);
+function wait(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function readStoredProbeJobs() {
+  try {
+    const parsed = JSON.parse(localStorage.getItem(ADMIN_PROBE_JOBS_KEY) || '{}');
+    return parsed && typeof parsed === 'object' ? parsed : {};
+  } catch (_) {
+    return {};
+  }
+}
+
+function storeProbeJob(jobKey, jobId, modelId, providerId) {
+  const jobs = readStoredProbeJobs();
+  jobs[jobKey] = { jobId, modelId, providerId, startedAt: Date.now() };
+  localStorage.setItem(ADMIN_PROBE_JOBS_KEY, JSON.stringify(jobs));
+}
+
+function removeStoredProbeJob(jobKey) {
+  const jobs = readStoredProbeJobs();
+  delete jobs[jobKey];
+  localStorage.setItem(ADMIN_PROBE_JOBS_KEY, JSON.stringify(jobs));
+}
+
+function resumeStoredProbeJobs() {
+  Object.entries(readStoredProbeJobs()).forEach(([jobKey, item]) => {
+    if (!item?.jobId || !item?.modelId || !item?.providerId || activeProbeJobs.has(jobKey)) return;
+    activeProbeJobs.set(jobKey, item.jobId);
+    testPanel.hidden = false;
+    testMeta.textContent = `模型 ${item.modelId} · provider ${item.providerId} · 恢复后台探测进度...`;
+    resetProbeProgress(false);
+    pollProbeJob(item.jobId, item.modelId, item.providerId, jobKey).catch((error) => {
+      activeProbeJobs.delete(jobKey);
+      removeStoredProbeJob(jobKey);
+      probeProgressText.textContent = error.message;
+      appendProbeLog(`恢复失败 · ${error.message}`);
+    });
   });
-  picker.value = models.includes(currentValue) ? currentValue : '';
 }
 
 async function streamProbeProvider(body, onEvent) {
@@ -407,6 +458,59 @@ async function streamProbeProvider(body, onEvent) {
   return finalPayload;
 }
 
+async function legacyProbeProvider(model, provider) {
+  return streamProbeProvider({
+    model_id: model.id,
+    provider,
+    sizes: PROBE_SIZES,
+    qualities: PROBE_QUALITIES,
+    formats: PROBE_FORMATS,
+    include_edit: true,
+    full_matrix: false,
+    stream: true,
+  }, (event) => updateProbeProgress(event, model, provider));
+}
+
+async function fetchProviderModels(modelIndex, providerIndex, node) {
+  const model = routes.models[modelIndex];
+  const provider = model?.providers?.[providerIndex];
+  if (!model || !provider) return;
+  if (typeof provider.api_key === 'string' && provider.api_key.startsWith('***')) {
+    toast('api_key 是脱敏值，请先保存配置再获取模型列表', 'error');
+    return;
+  }
+  const button = node.querySelector('[data-action="fetch-models"]');
+  const picker = node.querySelector('[data-role="model-picker"]');
+  if (!picker || !button) return;
+  button.disabled = true;
+  button.textContent = '获取中';
+  try {
+    const payload = await api('/api/admin/provider-models', {
+      method: 'POST',
+      body: JSON.stringify({ provider }),
+    });
+    renderModelPickerOptions(picker, payload.models || [], provider.upstream_model);
+    picker.hidden = false;
+    toast(`已获取 ${payload.models?.length || 0} 个模型`, 'ok');
+  } catch (error) {
+    toast(`获取模型失败：${error.message}`, 'error');
+  } finally {
+    button.disabled = false;
+    button.textContent = '获取';
+  }
+}
+
+function renderModelPickerOptions(picker, models, currentValue) {
+  picker.innerHTML = '<option value="">选择模型 id</option>';
+  models.forEach((modelId) => {
+    const option = document.createElement('option');
+    option.value = modelId;
+    option.textContent = modelId;
+    picker.append(option);
+  });
+  picker.value = models.includes(currentValue) ? currentValue : '';
+}
+
 function resetProbeProgress(hidden) {
   probeProgress.hidden = hidden;
   probeProgressFill.style.width = '0%';
@@ -420,7 +524,8 @@ function updateProbeProgress(event, model, provider) {
   const percent = total ? Math.max(0, Math.min(100, Math.round((completed / total) * 100))) : 0;
   if (event.type === 'start') {
     probeProgressFill.style.width = '0%';
-    probeProgressText.textContent = `准备探测 0 / ${event.total}`;
+    const delayText = Array.isArray(event.delay_range) ? ` · 间隔 ${event.delay_range[0]}-${event.delay_range[1]}s` : '';
+    probeProgressText.textContent = `准备探测 0 / ${event.total}${delayText}`;
     testMeta.textContent = `模型 ${model.id} · provider ${provider.id} · 准备探测`;
     return;
   }
@@ -445,14 +550,25 @@ function updateProbeProgress(event, model, provider) {
     appendProbeLog(`等待 · ${event.delay}s · ${event.reason}`);
     return;
   }
+  if (event.type === 'probe_wait') {
+    probeProgressText.textContent = `等待 ${event.delay}s 后继续下一项 · ${completed} / ${total}`;
+    appendProbeLog(`间隔等待 · ${event.delay}s`);
+    return;
+  }
   if (event.type === 'guard_stop') {
     probeProgressText.textContent = `已停止连续探测 · ${event.reason}`;
     appendProbeLog(`停止 · ${event.reason}`);
     return;
   }
+  if (event.type === 'saving') {
+    probeProgressFill.style.width = `${percent}%`;
+    probeProgressText.textContent = '探测结束，正在自动保存配置...';
+    appendProbeLog('保存 · 写入 model-routes.json');
+    return;
+  }
   if (event.type === 'complete') {
     probeProgressFill.style.width = '100%';
-    probeProgressText.textContent = `探测完成 · ${event.elapsed}s`;
+    probeProgressText.textContent = `探测完成 · ${event.elapsed}s${event.saved ? ' · 已保存' : ''}`;
   }
 }
 

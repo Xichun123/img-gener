@@ -5,7 +5,9 @@ import mimetypes
 import os
 import pathlib
 import threading
+import time
 import urllib.parse
+import uuid
 
 import upstream_client
 
@@ -89,6 +91,24 @@ ALLOWED_HOSTS = _split_env_set("ALLOWED_HOSTS") | {
 ALLOWED_ORIGINS = _split_env_set("ALLOWED_ORIGINS")
 _KEYS_LOCK = threading.Lock()
 _ROUTES_LOCK = threading.Lock()
+_PROBE_JOBS_LOCK = threading.Lock()
+_PROBE_JOBS = {}
+_PROBE_JOB_MAX_EVENTS = 240
+_PROBE_JOB_RETENTION_SECONDS = 24 * 60 * 60
+
+
+def _env_float(name, default):
+    try:
+        return float(os.environ.get(name, default))
+    except (TypeError, ValueError):
+        return float(default)
+
+
+_PROBE_BACKGROUND_DELAY_MIN = _env_float("PROBE_BACKGROUND_DELAY_MIN", 60)
+_PROBE_BACKGROUND_DELAY_MAX = _env_float("PROBE_BACKGROUND_DELAY_MAX", 120)
+if _PROBE_BACKGROUND_DELAY_MAX < _PROBE_BACKGROUND_DELAY_MIN:
+    _PROBE_BACKGROUND_DELAY_MAX = _PROBE_BACKGROUND_DELAY_MIN
+PROBE_BACKGROUND_DELAY_RANGE = (_PROBE_BACKGROUND_DELAY_MIN, _PROBE_BACKGROUND_DELAY_MAX)
 
 
 class Handler(http.server.BaseHTTPRequestHandler):
@@ -110,6 +130,9 @@ class Handler(http.server.BaseHTTPRequestHandler):
             return
         if parsed.path == "/api/admin/model-routes":
             self.handle_admin_get_routes()
+            return
+        if parsed.path == "/api/admin/probe-provider/job":
+            self.handle_admin_probe_job(parsed)
             return
         if parsed.path.startswith("/api/"):
             self.send_json(405, {"error": "Method not allowed"})
@@ -150,6 +173,9 @@ class Handler(http.server.BaseHTTPRequestHandler):
             return
         if parsed.path == "/api/admin/probe-provider":
             self.handle_admin_probe_provider()
+            return
+        if parsed.path == "/api/admin/probe-provider/start":
+            self.handle_admin_start_probe_provider()
             return
         if parsed.path == "/api/admin/provider-models":
             self.handle_admin_provider_models()
@@ -392,6 +418,68 @@ class Handler(http.server.BaseHTTPRequestHandler):
             "capabilities": capabilities,
         })
 
+    def handle_admin_start_probe_provider(self):
+        if not self.require_admin():
+            return
+        body = self.read_json_body()
+        if body is None:
+            return
+        model_id = str(body.get("model_id") or "").strip()
+        provider_id = str(body.get("provider_id") or "").strip()
+        if not model_id or not provider_id:
+            self.send_json(400, {"error": "model_id 和 provider_id 不能为空。"})
+            return
+        try:
+            candidates = {
+                "sizes": clean_probe_candidates(body.get("sizes"), DEFAULT_SIZES, "sizes"),
+                "qualities": clean_probe_candidates(body.get("qualities"), DEFAULT_QUALITIES, "qualities"),
+                "formats": clean_probe_candidates(body.get("formats"), DEFAULT_FORMATS, "formats"),
+            }
+            model, provider = find_provider(get_model_routes(), model_id, provider_id)
+            validate_provider(provider, allow_masked_key=False)
+            job = create_probe_job(
+                model_id,
+                provider_id,
+                upstream_client.estimate_provider_capability_probe_total(
+                    candidates,
+                    include_edit=body.get("include_edit") is not False,
+                    full_matrix=body.get("full_matrix") is True,
+                ),
+            )
+            worker = threading.Thread(
+                target=run_probe_job,
+                args=(
+                    job["id"],
+                    model["id"],
+                    provider["id"],
+                    candidates,
+                    body.get("include_edit") is not False,
+                    body.get("full_matrix") is True,
+                ),
+                daemon=True,
+            )
+            worker.start()
+        except ValueError as error:
+            self.send_json(400, {"error": str(error)})
+            return
+        except Exception as error:
+            self.send_json(502, {"error": f"启动能力探测失败：{error}"})
+            return
+        self.send_json(202, public_probe_job(job))
+
+    def handle_admin_probe_job(self, parsed):
+        if not self.require_admin():
+            return
+        job_id = urllib.parse.parse_qs(parsed.query).get("id", [""])[0].strip()
+        if not job_id:
+            self.send_json(400, {"error": "job id 不能为空。"})
+            return
+        job = get_probe_job(job_id)
+        if not job:
+            self.send_json(404, {"error": "探测任务不存在或已过期。"})
+            return
+        self.send_json(200, public_probe_job(job))
+
     def handle_admin_provider_models(self):
         if not self.require_admin():
             return
@@ -619,6 +707,202 @@ def save_model_routes(routes):
     tmp = MODEL_ROUTES_FILE.with_suffix(MODEL_ROUTES_FILE.suffix + ".tmp")
     tmp.write_text(payload, encoding="utf-8")
     os.replace(tmp, MODEL_ROUTES_FILE)
+
+
+def find_provider(routes, model_id, provider_id):
+    for model in routes.get("models", []):
+        if model.get("id") != model_id:
+            continue
+        for provider in model.get("providers", []):
+            if provider.get("id") == provider_id:
+                return model, provider
+        raise ValueError(f"模型 {model_id} 中没有 provider {provider_id}。")
+    raise ValueError(f"模型不存在：{model_id}")
+
+
+def save_provider_capabilities(model_id, provider_id, capabilities):
+    with _ROUTES_LOCK:
+        routes = load_model_routes()
+        _, provider = find_provider(routes, model_id, provider_id)
+        provider["capabilities"] = capabilities
+        provider["supports_generate"] = capabilities.get("supports_generate") is True
+        provider["supports_edit"] = capabilities.get("supports_edit") is True
+        save_model_routes(routes)
+    upstream_client.clear_provider_health()
+
+
+def create_probe_job(model_id, provider_id, total):
+    cleanup_probe_jobs()
+    now = iso_now()
+    job = {
+        "id": uuid.uuid4().hex,
+        "status": "queued",
+        "model_id": model_id,
+        "provider_id": provider_id,
+        "total": int(total),
+        "completed": 0,
+        "success_count": 0,
+        "events": [],
+        "event_seq": 0,
+        "created_at": now,
+        "started_at": None,
+        "updated_at": now,
+        "finished_at": None,
+        "elapsed": None,
+        "capabilities": None,
+        "error": None,
+        "saved": False,
+        "delay_range": list(PROBE_BACKGROUND_DELAY_RANGE),
+    }
+    with _PROBE_JOBS_LOCK:
+        _PROBE_JOBS[job["id"]] = job
+    return job
+
+
+def get_probe_job(job_id):
+    cleanup_probe_jobs()
+    with _PROBE_JOBS_LOCK:
+        job = _PROBE_JOBS.get(job_id)
+        return json.loads(json.dumps(job, ensure_ascii=False)) if job else None
+
+
+def public_probe_job(job):
+    return {
+        "id": job["id"],
+        "status": job["status"],
+        "model_id": job["model_id"],
+        "provider_id": job["provider_id"],
+        "total": job.get("total", 0),
+        "completed": job.get("completed", 0),
+        "success_count": job.get("success_count", 0),
+        "events": list(job.get("events", [])),
+        "created_at": job.get("created_at"),
+        "started_at": job.get("started_at"),
+        "updated_at": job.get("updated_at"),
+        "finished_at": job.get("finished_at"),
+        "elapsed": job.get("elapsed"),
+        "capabilities": job.get("capabilities"),
+        "error": job.get("error"),
+        "saved": job.get("saved") is True,
+        "delay_range": job.get("delay_range"),
+    }
+
+
+def cleanup_probe_jobs():
+    cutoff = time.time() - _PROBE_JOB_RETENTION_SECONDS
+    with _PROBE_JOBS_LOCK:
+        expired = []
+        for job_id, job in _PROBE_JOBS.items():
+            if job.get("status") in {"queued", "running", "saving"}:
+                continue
+            finished = job.get("_finished_ts")
+            if finished and finished < cutoff:
+                expired.append(job_id)
+        for job_id in expired:
+            _PROBE_JOBS.pop(job_id, None)
+
+
+def update_probe_job(job_id, **fields):
+    with _PROBE_JOBS_LOCK:
+        job = _PROBE_JOBS.get(job_id)
+        if not job:
+            return None
+        job.update(fields)
+        job["updated_at"] = iso_now()
+        return json.loads(json.dumps(job, ensure_ascii=False))
+
+
+def append_probe_job_event(job_id, event):
+    event = dict(event)
+    event["at"] = iso_now()
+    with _PROBE_JOBS_LOCK:
+        job = _PROBE_JOBS.get(job_id)
+        if not job:
+            return
+        job["event_seq"] = int(job.get("event_seq") or 0) + 1
+        event["seq"] = job["event_seq"]
+        job["events"].append(event)
+        if len(job["events"]) > _PROBE_JOB_MAX_EVENTS:
+            job["events"] = job["events"][-_PROBE_JOB_MAX_EVENTS:]
+        if "completed" in event:
+            job["completed"] = int(event.get("completed") or 0)
+        if "total" in event:
+            job["total"] = int(event.get("total") or job.get("total") or 0)
+        if "success_count" in event:
+            job["success_count"] = int(event.get("success_count") or 0)
+        job["updated_at"] = event["at"]
+
+
+def run_probe_job(job_id, model_id, provider_id, candidates, include_edit, full_matrix):
+    started = time.monotonic()
+    update_probe_job(job_id, status="running", started_at=iso_now())
+
+    def progress(event):
+        append_probe_job_event(job_id, event)
+
+    try:
+        routes = get_model_routes()
+        _, provider = find_provider(routes, model_id, provider_id)
+        provider = json.loads(json.dumps(provider, ensure_ascii=False))
+        total = upstream_client.estimate_provider_capability_probe_total(
+            candidates,
+            include_edit=include_edit,
+            full_matrix=full_matrix,
+        )
+        progress({
+            "type": "start",
+            "provider_id": provider["id"],
+            "total": total,
+            "delay_range": list(PROBE_BACKGROUND_DELAY_RANGE),
+        })
+        result = upstream_client.probe_provider_capabilities(
+            provider,
+            model_id,
+            candidates,
+            include_edit=include_edit,
+            full_matrix=full_matrix,
+            progress_callback=progress,
+            probe_delay_range=PROBE_BACKGROUND_DELAY_RANGE,
+            guard_delay_range=PROBE_BACKGROUND_DELAY_RANGE,
+        )
+        capabilities = validate_provider_capabilities({
+            **result,
+            "tested_at": iso_now(),
+        }, f"provider {provider['id']} capabilities")
+        update_probe_job(job_id, status="saving")
+        progress({"type": "saving", "completed": len(capabilities.get("tests", [])), "total": total})
+        save_provider_capabilities(model_id, provider_id, capabilities)
+        elapsed = round(time.monotonic() - started, 1)
+        complete_event = {
+            "type": "complete",
+            "ok": bool(capabilities.get("supports_generate")),
+            "elapsed": elapsed,
+            "provider_id": provider["id"],
+            "capabilities": capabilities,
+            "saved": True,
+        }
+        progress(complete_event)
+        update_probe_job(
+            job_id,
+            status="completed",
+            finished_at=iso_now(),
+            _finished_ts=time.time(),
+            elapsed=elapsed,
+            capabilities=capabilities,
+            saved=True,
+        )
+    except Exception as error:
+        elapsed = round(time.monotonic() - started, 1)
+        message = f"能力探测失败：{error}"
+        progress({"type": "error", "error": message, "elapsed": elapsed})
+        update_probe_job(
+            job_id,
+            status="failed",
+            finished_at=iso_now(),
+            _finished_ts=time.time(),
+            elapsed=elapsed,
+            error=message,
+        )
 
 
 def default_model_routes():

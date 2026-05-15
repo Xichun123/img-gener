@@ -392,6 +392,9 @@ def probe_provider_capabilities(
     include_edit: bool = True,
     full_matrix: bool = False,
     progress_callback=None,
+    probe_delay_range: Optional[Tuple[float, float]] = None,
+    guard_delay_range: Optional[Tuple[float, float]] = None,
+    guard_max_throttled_tests: Optional[int] = None,
 ) -> Dict:
     sizes = _clean_probe_values(candidates.get("sizes"), ["1024x1024"])
     qualities = _clean_probe_values(candidates.get("qualities"), ["low"])
@@ -406,6 +409,12 @@ def probe_provider_capabilities(
     combinations = []
     tests = []
     throttle_state = {"active": False, "count": 0, "reason": None, "stopped": False}
+    guard_delay_range = guard_delay_range or _PROBE_GUARD_DELAY_RANGE
+    guard_max_throttled_tests = (
+        _PROBE_GUARD_MAX_THROTTLED_TESTS
+        if guard_max_throttled_tests is None
+        else max(0, int(guard_max_throttled_tests))
+    )
 
     planned = _build_probe_plan(
         sizes,
@@ -423,7 +432,7 @@ def probe_provider_capabilities(
         if throttle_state["stopped"]:
             return False
         if throttle_state["active"]:
-            if throttle_state["count"] >= _PROBE_GUARD_MAX_THROTTLED_TESTS:
+            if throttle_state["count"] >= guard_max_throttled_tests:
                 throttle_state["stopped"] = True
                 if progress_callback:
                     progress_callback({
@@ -433,7 +442,7 @@ def probe_provider_capabilities(
                         "reason": throttle_state["reason"] or "上游疑似风控 / 限流。",
                     })
                 return False
-            delay = random.uniform(*_PROBE_GUARD_DELAY_RANGE)
+            delay = random.uniform(*guard_delay_range)
             if progress_callback:
                 progress_callback({
                     "type": "guard_wait",
@@ -441,6 +450,17 @@ def probe_provider_capabilities(
                     "total": total_steps,
                     "delay": round(delay, 1),
                     "reason": throttle_state["reason"] or "上游疑似风控 / 限流。",
+                })
+            time.sleep(delay)
+        elif probe_delay_range and tests:
+            delay = random.uniform(*probe_delay_range)
+            if progress_callback:
+                progress_callback({
+                    "type": "probe_wait",
+                    "completed": len(tests),
+                    "total": total_steps,
+                    "delay": round(delay, 1),
+                    "reason": "后台探测按间隔执行，避免短时间频繁访问上游。",
                 })
             time.sleep(delay)
         if progress_callback:

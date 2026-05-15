@@ -53,7 +53,7 @@ saveRoutesBtn.addEventListener('click', saveRoutes);
 resetHealthBtn.addEventListener('click', resetHealth);
 addModelBtn.addEventListener('click', () => {
   const fresh = newModel();
-  fresh.id = nextAvailableId(routes.models.map((m) => m.id), 'new-model');
+  fresh.id = nextAvailableId(routes.models.map((m) => m.id), 'model');
   routes.models.push(fresh);
   expandedModels.clear();
   expandedModels.add(fresh.id);
@@ -310,10 +310,6 @@ function renderModelCard(model, modelIndex) {
   const collapseBtn = node.querySelector('[data-action="toggle-collapse"]');
   collapseBtn.textContent = isExpanded ? '折叠' : '展开';
 
-  bindInput(node, 'id', model, 'id', () => {
-    node.dataset.modelId = model.id;
-    updateSummary(node, model);
-  });
   bindInput(node, 'label', model, 'label');
   bindCheckbox(node, 'enabled', model, 'enabled', () => updateSummary(node, model));
   bindCheckbox(node, 'supports_edit', model, 'supports_edit', () => updateSummary(node, model));
@@ -418,7 +414,7 @@ function cssEscape(value) {
 }
 
 function nextAvailableId(existing, prefix) {
-  const used = new Set(existing);
+  const used = existing instanceof Set ? existing : new Set(existing);
   if (!used.has(prefix)) return prefix;
   let i = 2;
   while (used.has(`${prefix}-${i}`)) i++;
@@ -518,8 +514,8 @@ function bindSelect(node, field, target, key, options, allowEmpty = false, onCha
 
 function newModel() {
   return {
-    id: 'new-model',
-    label: 'New Model',
+    id: 'model',
+    label: '新模型',
     enabled: true,
     supports_edit: false,
     sizes: ['1024x1024'],
@@ -546,28 +542,36 @@ function newProvider() {
 
 function normalizeRoutes(payload) {
   const models = Array.isArray(payload?.models) ? payload.models : [];
+  const usedModelIds = new Set();
   return {
-    models: models.map((model) => ({
-      id: String(model.id ?? ''),
-      label: String(model.label ?? model.id ?? ''),
-      enabled: model.enabled !== false,
-      supports_edit: Boolean(model.supports_edit),
-      sizes: Array.isArray(model.sizes) ? [...model.sizes] : [],
-      qualities: Array.isArray(model.qualities) ? [...model.qualities] : [],
-      formats: Array.isArray(model.formats) ? [...model.formats] : [],
-      providers: Array.isArray(model.providers) ? model.providers.map((provider) => ({
-        id: String(provider.id ?? ''),
-        enabled: provider.enabled !== false,
-        priority: Number.isFinite(provider.priority) ? provider.priority : 100,
-        protocol: provider.protocol ?? 'openai_images',
-        base_url: String(provider.base_url ?? ''),
-        api_key: String(provider.api_key ?? ''),
-        upstream_model: String(provider.upstream_model ?? ''),
-        supports_generate: provider.supports_generate !== false,
-        supports_edit: provider.supports_edit !== false,
-        headers_preset: provider.headers_preset ?? null,
-      })) : [],
-    })),
+    models: models.map((model) => {
+      const incomingId = String(model.id ?? '').trim();
+      const id = incomingId && !usedModelIds.has(incomingId)
+        ? incomingId
+        : nextAvailableId(usedModelIds, 'model');
+      usedModelIds.add(id);
+      return {
+        id,
+        label: String(model.label ?? id),
+        enabled: model.enabled !== false,
+        supports_edit: Boolean(model.supports_edit),
+        sizes: Array.isArray(model.sizes) ? [...model.sizes] : [],
+        qualities: Array.isArray(model.qualities) ? [...model.qualities] : [],
+        formats: Array.isArray(model.formats) ? [...model.formats] : [],
+        providers: Array.isArray(model.providers) ? model.providers.map((provider) => ({
+          id: String(provider.id ?? ''),
+          enabled: provider.enabled !== false,
+          priority: Number.isFinite(provider.priority) ? provider.priority : 100,
+          protocol: provider.protocol ?? 'openai_images',
+          base_url: String(provider.base_url ?? ''),
+          api_key: String(provider.api_key ?? ''),
+          upstream_model: String(provider.upstream_model ?? ''),
+          supports_generate: provider.supports_generate !== false,
+          supports_edit: provider.supports_edit !== false,
+          headers_preset: provider.headers_preset ?? null,
+        })) : [],
+      };
+    }),
   };
 }
 

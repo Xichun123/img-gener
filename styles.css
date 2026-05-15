@@ -1192,7 +1192,6 @@ select:disabled, input:disabled, textarea:disabled {
   align-items: center;
   margin-bottom: 14px;
 }
-.model-id-input { flex: 1 1 180px; min-width: 160px; }
 .model-label-input { flex: 1 1 180px; min-width: 160px; }
 .model-card-body {
   display: flex;

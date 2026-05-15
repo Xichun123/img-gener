@@ -22,6 +22,10 @@ BROWSER_HEADERS = {
     ),
     "Accept": "application/json",
 }
+PROBE_IMAGE_B64 = (
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMB"
+    "/6X4nQAAAABJRU5ErkJggg=="
+)
 
 
 class UpstreamHTTPError(Exception):
@@ -328,6 +332,96 @@ def test_provider(provider: Dict, model_id: str, task: Dict) -> Dict:
     return _call_provider(provider, model_id, task)
 
 
+def probe_provider_capabilities(
+    provider: Dict,
+    model_id: str,
+    candidates: Dict[str, List[str]],
+    include_edit: bool = True,
+    full_matrix: bool = False,
+) -> Dict:
+    sizes = _clean_probe_values(candidates.get("sizes"), ["1024x1024"])
+    qualities = _clean_probe_values(candidates.get("qualities"), ["low"])
+    formats = _clean_probe_values(candidates.get("formats"), ["png"])
+    preferred_size = _pick_preferred(sizes, "1024x1024")
+    preferred_quality = _pick_preferred(qualities, "low")
+    preferred_format = _pick_preferred(formats, "png")
+
+    successful_sizes = set()
+    successful_qualities = set()
+    successful_formats = set()
+    combinations = []
+    tests = []
+
+    def run_probe(mode: str, size: str, quality: str, output_format: str) -> bool:
+        task = {
+            "prompt": "A simple red square icon on a white background.",
+            "size": size,
+            "quality": quality,
+            "output_format": output_format,
+            "image": _probe_image() if mode == "edit" else None,
+            "is_edit": mode == "edit",
+            "index": 1,
+            "order": len(tests) + 1,
+        }
+        started = time.monotonic()
+        result = _call_provider(provider, model_id, task)
+        ok = not result.get("error")
+        tests.append({
+            "mode": mode,
+            "size": size,
+            "quality": quality,
+            "format": output_format,
+            "ok": ok,
+            "elapsed": round(time.monotonic() - started, 1),
+            **({"error": result.get("error")} if result.get("error") else {}),
+        })
+        if ok:
+            successful_sizes.add(size)
+            successful_qualities.add(quality)
+            successful_formats.add(output_format)
+            combinations.append({
+                "mode": mode,
+                "size": size,
+                "quality": quality,
+                "format": output_format,
+            })
+        return ok
+
+    if full_matrix:
+        for size in sizes:
+            for quality in qualities:
+                for output_format in formats:
+                    run_probe("generate", size, quality, output_format)
+    else:
+        for size in sizes:
+            run_probe("generate", size, preferred_quality, preferred_format)
+        working_size = _pick_preferred(list(successful_sizes) or sizes, preferred_size)
+        for quality in qualities:
+            run_probe("generate", working_size, quality, preferred_format)
+        working_quality = _pick_preferred(list(successful_qualities) or qualities, preferred_quality)
+        for output_format in formats:
+            run_probe("generate", working_size, working_quality, output_format)
+
+    supports_generate = any(test["mode"] == "generate" and test["ok"] for test in tests)
+    supports_edit = False
+    if include_edit and supports_generate:
+        edit_size = _pick_preferred(list(successful_sizes) or sizes, preferred_size)
+        edit_quality = _pick_preferred(list(successful_qualities) or qualities, preferred_quality)
+        edit_format = _pick_preferred(list(successful_formats) or formats, preferred_format)
+        supports_edit = run_probe("edit", edit_size, edit_quality, edit_format)
+
+    return {
+        "supports_generate": supports_generate,
+        "supports_edit": supports_edit,
+        "sizes": sorted(successful_sizes, key=sizes.index),
+        "qualities": sorted(successful_qualities, key=qualities.index),
+        "formats": sorted(successful_formats, key=formats.index),
+        "combinations": combinations,
+        "matrix_complete": bool(full_matrix),
+        "tests": tests,
+    }
+
+
 def _generate_single(routes: Dict, task: Dict) -> Dict:
     model = task["model"]
     request_index = task["index"]
@@ -345,6 +439,7 @@ def _generate_single(routes: Dict, task: Dict) -> Dict:
         provider for provider in model_config.get("providers", [])
         if provider.get("enabled") is not False
         and ((is_edit and provider.get("supports_edit") is not False) or (not is_edit and provider.get("supports_generate") is not False))
+        and provider_supports_task(provider, task)
     ]
     providers.sort(key=lambda item: int(item.get("priority", 100)))
     if not providers:
@@ -387,6 +482,39 @@ def _find_model(routes: Dict, model_id: str) -> Optional[Dict]:
         if model.get("id") == model_id and model.get("enabled") is not False:
             return model
     return None
+
+
+def provider_supports_task(provider: Dict, task: Dict) -> bool:
+    capabilities = provider.get("capabilities")
+    if not isinstance(capabilities, dict):
+        return True
+
+    mode = "edit" if task.get("is_edit", False) else "generate"
+    if mode == "edit" and capabilities.get("supports_edit") is False:
+        return False
+    if mode == "generate" and capabilities.get("supports_generate") is False:
+        return False
+
+    size = task.get("size", "auto")
+    quality = task.get("quality", "auto")
+    output_format = task.get("output_format", "png")
+    if size not in capabilities.get("sizes", []):
+        return False
+    if quality not in capabilities.get("qualities", []):
+        return False
+    if output_format not in capabilities.get("formats", []):
+        return False
+
+    if capabilities.get("matrix_complete") is True:
+        return any(
+            item.get("mode") == mode
+            and item.get("size") == size
+            and item.get("quality") == quality
+            and item.get("format") == output_format
+            for item in capabilities.get("combinations", [])
+            if isinstance(item, dict)
+        )
+    return True
 
 
 def _call_provider(provider: Dict, stable_model_id: str, task: Dict) -> Dict:
@@ -443,6 +571,29 @@ def _provider_headers(provider: Dict) -> Optional[Dict[str, str]]:
     if provider.get("headers_preset") == "browser":
         return BROWSER_HEADERS
     return None
+
+
+def _clean_probe_values(values: Optional[List[str]], fallback: List[str]) -> List[str]:
+    cleaned = []
+    if isinstance(values, list):
+        for value in values:
+            if isinstance(value, str) and value.strip() and value.strip() not in cleaned:
+                cleaned.append(value.strip())
+    return cleaned or list(fallback)
+
+
+def _pick_preferred(values: List[str], preferred: str) -> str:
+    if preferred in values:
+        return preferred
+    return values[0]
+
+
+def _probe_image() -> Dict:
+    return {
+        "name": "probe.png",
+        "type": "image/png",
+        "data": PROBE_IMAGE_B64,
+    }
 
 
 def _provider_circuit_open(provider_id: str) -> bool:

@@ -141,34 +141,7 @@
         <button type="button" class="danger-btn small-btn" data-action="delete-model">删除</button>
       </header>
       <div class="model-card-body">
-        <label class="check-inline">
-          <input type="checkbox" data-field="supports_edit">
-          <span>支持图生图 / 编辑</span>
-        </label>
-        <div class="chip-field">
-          <span class="chip-label">尺寸 sizes</span>
-          <div class="chip-list" data-field="sizes"></div>
-          <div class="chip-add">
-            <input type="text" placeholder="新增尺寸，例如 1024x1024">
-            <button type="button" class="ghost-btn small-btn" data-action="add-chip">+</button>
-          </div>
-        </div>
-        <div class="chip-field">
-          <span class="chip-label">质量 qualities</span>
-          <div class="chip-list" data-field="qualities"></div>
-          <div class="chip-add">
-            <input type="text" placeholder="新增质量，例如 low / medium / high / auto">
-            <button type="button" class="ghost-btn small-btn" data-action="add-chip">+</button>
-          </div>
-        </div>
-        <div class="chip-field">
-          <span class="chip-label">输出格式 formats</span>
-          <div class="chip-list" data-field="formats"></div>
-          <div class="chip-add">
-            <input type="text" placeholder="新增格式，例如 png / jpeg / webp">
-            <button type="button" class="ghost-btn small-btn" data-action="add-chip">+</button>
-          </div>
-        </div>
+        <div class="derived-capabilities" data-role="model-capabilities"></div>
 
         <div class="providers-block">
           <div class="providers-head">
@@ -191,6 +164,7 @@
         <input class="provider-id-input" type="text" data-field="id" placeholder="provider id">
         <input class="provider-priority-input" type="number" data-field="priority" min="1" max="9999" placeholder="优先级">
         <button type="button" class="primary-btn small-btn" data-action="test-provider">测试</button>
+        <button type="button" class="ghost-btn small-btn" data-action="probe-provider">探测能力</button>
         <button type="button" class="danger-btn small-btn" data-action="delete-provider">删除</button>
       </header>
       <div class="provider-grid">
@@ -233,6 +207,7 @@
           <span>支持图生图</span>
         </label>
       </div>
+      <div class="provider-capabilities" data-role="provider-capabilities"></div>
     </article>
   </template>
 

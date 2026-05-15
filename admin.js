@@ -28,6 +28,9 @@ const ADMIN_SESSION_KEY = 'img-gener.admin-session';
 const SESSION_TTL_MS = 30 * 24 * 60 * 60 * 1000;
 const PROTOCOLS = ['openai_images', 'gemini_native', 'openai_responses_image'];
 const HEADER_PRESETS = ['', 'browser'];
+const PROBE_SIZES = ['auto', '1024x1024', '1024x1536', '1536x1024', '1792x1024', '1024x1792', '2048x2048', '2048x3072', '3072x2048', '3840x2160', '2160x3840'];
+const PROBE_QUALITIES = ['low', 'medium', 'high', 'auto'];
+const PROBE_FORMATS = ['png', 'jpeg', 'webp'];
 
 let routes = { models: [] };
 let loaded = false;
@@ -252,9 +255,9 @@ async function testProvider(modelIndex, providerIndex) {
         model_id: model.id,
         provider,
         prompt: 'A simple red square icon on a white background.',
-        size: model.sizes?.includes('1024x1024') ? '1024x1024' : (model.sizes?.[0] || '1024x1024'),
-        quality: model.qualities?.includes('low') ? 'low' : (model.qualities?.[0] || 'low'),
-        output_format: model.formats?.includes('png') ? 'png' : (model.formats?.[0] || 'png'),
+        size: provider.capabilities?.sizes?.includes('1024x1024') ? '1024x1024' : (provider.capabilities?.sizes?.[0] || '1024x1024'),
+        quality: provider.capabilities?.qualities?.includes('low') ? 'low' : (provider.capabilities?.qualities?.[0] || 'low'),
+        output_format: provider.capabilities?.formats?.includes('png') ? 'png' : (provider.capabilities?.formats?.[0] || 'png'),
       }),
     });
     testMeta.textContent = `模型 ${model.id} · provider ${provider.id} · ${payload.ok ? '成功' : '失败'} · ${payload.elapsed}s`;
@@ -264,6 +267,47 @@ async function testProvider(modelIndex, providerIndex) {
     testMeta.textContent = `模型 ${model.id} · provider ${provider.id} · 错误`;
     testResult.textContent = error.message;
     toast(`测试错误：${error.message}`, 'error');
+  }
+}
+
+async function probeProvider(modelIndex, providerIndex) {
+  const model = routes.models[modelIndex];
+  const provider = model?.providers?.[providerIndex];
+  if (!model || !provider) return;
+  if (typeof provider.api_key === 'string' && provider.api_key.startsWith('***')) {
+    toast('api_key 是脱敏值，请先保存配置再探测', 'error');
+    return;
+  }
+  if (!confirm(`将对 provider "${provider.id}" 发起多次真实生图测试，用于探测尺寸、质量、格式和图生图能力。继续？`)) return;
+  testPanel.hidden = false;
+  testMeta.textContent = `模型 ${model.id} · provider ${provider.id} · 能力探测中...`;
+  testResult.textContent = '';
+  testPanel.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+  try {
+    const payload = await api('/api/admin/probe-provider', {
+      method: 'POST',
+      body: JSON.stringify({
+        model_id: model.id,
+        provider,
+        sizes: PROBE_SIZES,
+        qualities: PROBE_QUALITIES,
+        formats: PROBE_FORMATS,
+        include_edit: true,
+        full_matrix: false,
+      }),
+    });
+    provider.capabilities = payload.capabilities;
+    provider.supports_generate = payload.capabilities.supports_generate;
+    provider.supports_edit = payload.capabilities.supports_edit;
+    routesEditor.value = JSON.stringify(routes, null, 2);
+    renderAll();
+    testMeta.textContent = `模型 ${model.id} · provider ${provider.id} · 探测完成 · ${payload.elapsed}s`;
+    testResult.textContent = JSON.stringify(payload, null, 2);
+    toast(payload.ok ? `能力探测完成（${payload.elapsed}s）` : '探测完成，但未发现可用文生图能力', payload.ok ? 'ok' : 'error');
+  } catch (error) {
+    testMeta.textContent = `模型 ${model.id} · provider ${provider.id} · 探测错误`;
+    testResult.textContent = error.message;
+    toast(`探测错误：${error.message}`, 'error');
   }
 }
 
@@ -312,11 +356,7 @@ function renderModelCard(model, modelIndex) {
 
   bindInput(node, 'label', model, 'label');
   bindCheckbox(node, 'enabled', model, 'enabled', () => updateSummary(node, model));
-  bindCheckbox(node, 'supports_edit', model, 'supports_edit', () => updateSummary(node, model));
-
-  renderChipField(node, 'sizes', model);
-  renderChipField(node, 'qualities', model);
-  renderChipField(node, 'formats', model);
+  renderModelCapabilities(node, model);
 
   const providersList = node.querySelector('[data-role="providers"]');
   providersList.innerHTML = '';
@@ -358,10 +398,12 @@ function updateSummary(node, model) {
   if (!target) return;
   const providers = model.providers || [];
   const enabled = providers.filter((p) => p.enabled !== false).length;
+  const capabilities = aggregateCapabilities(model);
   const tags = [];
   tags.push(`${providers.length} provider${providers.length === 1 ? '' : 's'}`);
   if (providers.length) tags.push(`启用 ${enabled}`);
-  if (model.supports_edit) tags.push('可编辑');
+  if (capabilities.supportsEdit) tags.push('可编辑');
+  if (capabilities.sizes.length) tags.push(`${capabilities.sizes.length} 尺寸`);
   if (!model.enabled) tags.push('已禁用');
   target.textContent = tags.join(' · ');
 }
@@ -381,6 +423,7 @@ function renderProviderCard(provider, modelIndex, providerIndex, model, modelNod
   bindCheckbox(node, 'enabled', provider, 'enabled', () => updateSummary(modelNode, model));
   bindCheckbox(node, 'supports_generate', provider, 'supports_generate');
   bindCheckbox(node, 'supports_edit', provider, 'supports_edit');
+  renderProviderCapabilities(node, provider);
 
   node.querySelector('[data-action="delete-provider"]').addEventListener('click', () => {
     if (!confirm(`确定删除 provider "${provider.id}"？`)) return;
@@ -391,6 +434,9 @@ function renderProviderCard(provider, modelIndex, providerIndex, model, modelNod
   node.querySelector('[data-action="test-provider"]').addEventListener('click', () => {
     testProvider(modelIndex, providerIndex);
   });
+  node.querySelector('[data-action="probe-provider"]').addEventListener('click', () => {
+    probeProvider(modelIndex, providerIndex);
+  });
   node.querySelector('[data-action="toggle-key"]').addEventListener('click', (event) => {
     const input = node.querySelector('[data-field="api_key"]');
     const showing = input.type === 'text';
@@ -399,6 +445,60 @@ function renderProviderCard(provider, modelIndex, providerIndex, model, modelNod
   });
 
   return node;
+}
+
+function renderModelCapabilities(node, model) {
+  const wrap = node.querySelector('[data-role="model-capabilities"]');
+  if (!wrap) return;
+  const capabilities = aggregateCapabilities(model);
+  wrap.innerHTML = '';
+  wrap.append(capabilityBlock('系统聚合能力', [
+    capabilities.supportsGenerate ? '支持文生图' : '未发现文生图',
+    capabilities.supportsEdit ? '支持图生图' : '不支持图生图',
+  ]));
+  wrap.append(capabilityBlock('尺寸', capabilities.sizes));
+  wrap.append(capabilityBlock('质量', capabilities.qualities));
+  wrap.append(capabilityBlock('格式', capabilities.formats));
+}
+
+function renderProviderCapabilities(node, provider) {
+  const wrap = node.querySelector('[data-role="provider-capabilities"]');
+  if (!wrap) return;
+  const capabilities = provider.capabilities;
+  wrap.innerHTML = '';
+  if (!capabilities) {
+    const empty = document.createElement('small');
+    empty.className = 'field-note';
+    empty.textContent = '未探测能力；保存旧配置时仍会使用兼容字段。';
+    wrap.append(empty);
+    return;
+  }
+  wrap.append(capabilityBlock(`探测结果${capabilities.tested_at ? ` · ${capabilities.tested_at}` : ''}`, [
+    capabilities.supports_generate ? '文生图可用' : '文生图不可用',
+    capabilities.supports_edit ? '图生图可用' : '图生图不可用',
+  ]));
+  wrap.append(capabilityBlock('尺寸', capabilities.sizes || []));
+  wrap.append(capabilityBlock('质量', capabilities.qualities || []));
+  wrap.append(capabilityBlock('格式', capabilities.formats || []));
+}
+
+function capabilityBlock(label, values) {
+  const block = document.createElement('div');
+  block.className = 'capability-block';
+  const title = document.createElement('span');
+  title.className = 'chip-label';
+  title.textContent = label;
+  const list = document.createElement('div');
+  list.className = 'chip-list';
+  const items = Array.isArray(values) && values.length ? values : ['无'];
+  items.forEach((value) => {
+    const chip = document.createElement('span');
+    chip.className = 'chip capability-chip';
+    chip.textContent = value;
+    list.append(chip);
+  });
+  block.append(title, list);
+  return block;
 }
 
 function scrollToModel(modelId) {
@@ -413,50 +513,54 @@ function cssEscape(value) {
   return String(value).replace(/["\\]/g, '\\$&');
 }
 
+function aggregateCapabilities(model) {
+  const providers = (model.providers || []).filter((provider) => provider.enabled !== false);
+  const sizes = [];
+  const qualities = [];
+  const formats = [];
+  let supportsGenerate = false;
+  let supportsEdit = false;
+
+  providers.forEach((provider) => {
+    if (provider.capabilities) {
+      if (provider.capabilities.supports_generate === false) return;
+      supportsGenerate = true;
+      supportsEdit = supportsEdit || provider.capabilities.supports_edit === true;
+      mergeUnique(sizes, provider.capabilities.sizes);
+      mergeUnique(qualities, provider.capabilities.qualities);
+      mergeUnique(formats, provider.capabilities.formats);
+      return;
+    }
+    if (provider.supports_generate === false) return;
+    supportsGenerate = true;
+    supportsEdit = supportsEdit || provider.supports_edit !== false;
+    mergeUnique(sizes, model.sizes || ['1024x1024']);
+    mergeUnique(qualities, model.qualities || ['low', 'medium', 'high']);
+    mergeUnique(formats, model.formats || ['png']);
+  });
+
+  return {
+    supportsGenerate,
+    supportsEdit,
+    sizes,
+    qualities,
+    formats,
+  };
+}
+
+function mergeUnique(target, values) {
+  if (!Array.isArray(values)) return;
+  values.forEach((value) => {
+    if (typeof value === 'string' && value && !target.includes(value)) target.push(value);
+  });
+}
+
 function nextAvailableId(existing, prefix) {
   const used = existing instanceof Set ? existing : new Set(existing);
   if (!used.has(prefix)) return prefix;
   let i = 2;
   while (used.has(`${prefix}-${i}`)) i++;
   return `${prefix}-${i}`;
-}
-
-function renderChipField(node, field, model) {
-  const wrap = node.querySelector(`.chip-list[data-field="${field}"]`);
-  wrap.innerHTML = '';
-  const values = Array.isArray(model[field]) ? model[field] : [];
-  values.forEach((value, valueIndex) => {
-    const chip = document.createElement('span');
-    chip.className = 'chip chip-removable';
-    chip.textContent = value;
-    const remove = document.createElement('button');
-    remove.type = 'button';
-    remove.textContent = '×';
-    remove.className = 'chip-remove';
-    remove.addEventListener('click', () => {
-      values.splice(valueIndex, 1);
-      renderChipField(node, field, model);
-      routesEditor.value = JSON.stringify(routes, null, 2);
-    });
-    chip.append(remove);
-    wrap.append(chip);
-  });
-  const adder = wrap.parentElement.querySelector('.chip-add');
-  const input = adder.querySelector('input');
-  const button = adder.querySelector('button');
-  const submit = () => {
-    const value = input.value.trim();
-    if (!value) return;
-    model[field] = model[field] || [];
-    if (!model[field].includes(value)) model[field].push(value);
-    input.value = '';
-    renderChipField(node, field, model);
-    routesEditor.value = JSON.stringify(routes, null, 2);
-  };
-  button.onclick = submit;
-  input.onkeydown = (event) => {
-    if (event.key === 'Enter') { event.preventDefault(); submit(); }
-  };
 }
 
 function bindInput(node, field, target, key, onChange) {
@@ -517,10 +621,6 @@ function newModel() {
     id: 'model',
     label: '新模型',
     enabled: true,
-    supports_edit: false,
-    sizes: ['1024x1024'],
-    qualities: ['low', 'medium', 'high'],
-    formats: ['png'],
     providers: [newProvider()],
   };
 }
@@ -536,6 +636,7 @@ function newProvider() {
     upstream_model: 'upstream-model-id',
     supports_generate: true,
     supports_edit: false,
+    capabilities: null,
     headers_preset: null,
   };
 }
@@ -568,10 +669,26 @@ function normalizeRoutes(payload) {
           upstream_model: String(provider.upstream_model ?? ''),
           supports_generate: provider.supports_generate !== false,
           supports_edit: provider.supports_edit !== false,
+          capabilities: normalizeCapabilities(provider.capabilities),
           headers_preset: provider.headers_preset ?? null,
         })) : [],
       };
     }),
+  };
+}
+
+function normalizeCapabilities(capabilities) {
+  if (!capabilities || typeof capabilities !== 'object') return null;
+  return {
+    supports_generate: capabilities.supports_generate !== false,
+    supports_edit: capabilities.supports_edit === true,
+    sizes: Array.isArray(capabilities.sizes) ? [...capabilities.sizes] : [],
+    qualities: Array.isArray(capabilities.qualities) ? [...capabilities.qualities] : [],
+    formats: Array.isArray(capabilities.formats) ? [...capabilities.formats] : [],
+    combinations: Array.isArray(capabilities.combinations) ? capabilities.combinations.map((item) => ({ ...item })) : [],
+    matrix_complete: capabilities.matrix_complete === true,
+    tested_at: capabilities.tested_at ?? null,
+    tests: Array.isArray(capabilities.tests) ? capabilities.tests.map((item) => ({ ...item })) : [],
   };
 }
 

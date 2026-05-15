@@ -148,6 +148,9 @@ class Handler(http.server.BaseHTTPRequestHandler):
         if parsed.path == "/api/admin/test-provider":
             self.handle_admin_test_provider()
             return
+        if parsed.path == "/api/admin/probe-provider":
+            self.handle_admin_probe_provider()
+            return
         if parsed.path == "/api/admin/provider-health/reset":
             self.handle_admin_reset_provider_health()
             return
@@ -203,16 +206,17 @@ class Handler(http.server.BaseHTTPRequestHandler):
         if total_requested > MAX_TOTAL_IMAGES:
             self.send_json(400, {"error": f"单次最多生成 {MAX_TOTAL_IMAGES} 张，请减少模型或数量。"})
             return
-        if any(size not in model_map[model].get("sizes", []) for model in models):
+        public_model_map = {model["id"]: model for model in public_models(routes)}
+        if any(size not in public_model_map.get(model, {}).get("sizes", []) for model in models):
             self.send_json(400, {"error": "不支持的尺寸。"})
             return
-        if any(quality not in model_map[model].get("qualities", []) for model in models):
+        if any(quality not in public_model_map.get(model, {}).get("qualities", []) for model in models):
             self.send_json(400, {"error": "不支持的质量。"})
             return
-        if any(output_format not in model_map[model].get("formats", []) for model in models):
+        if any(output_format not in public_model_map.get(model, {}).get("formats", []) for model in models):
             self.send_json(400, {"error": "不支持的输出格式。"})
             return
-        if is_edit and any(not model_map[model].get("supports_edit", False) for model in models):
+        if is_edit and any(not public_model_map.get(model, {}).get("supports_edit", False) for model in models):
             self.send_json(400, {"error": "所选模型不支持图生图 / 图片编辑。"})
             return
         if is_edit and not image:
@@ -330,6 +334,49 @@ class Handler(http.server.BaseHTTPRequestHandler):
             "has_b64_json": bool(result.get("b64_json")),
             "has_url": bool(result.get("url")),
             "provider_id": provider["id"],
+        })
+
+    def handle_admin_probe_provider(self):
+        if not self.require_admin():
+            return
+        body = self.read_json_body()
+        if body is None:
+            return
+        provider = body.get("provider")
+        if not isinstance(provider, dict):
+            self.send_json(400, {"error": "provider 配置缺失。"})
+            return
+        try:
+            provider = validate_provider(provider, allow_masked_key=False)
+            candidates = {
+                "sizes": clean_probe_candidates(body.get("sizes"), DEFAULT_SIZES, "sizes"),
+                "qualities": clean_probe_candidates(body.get("qualities"), DEFAULT_QUALITIES, "qualities"),
+                "formats": clean_probe_candidates(body.get("formats"), DEFAULT_FORMATS, "formats"),
+            }
+            from time import monotonic
+            started = monotonic()
+            result = upstream_client.probe_provider_capabilities(
+                provider,
+                str(body.get("model_id") or "test-model"),
+                candidates,
+                include_edit=body.get("include_edit") is not False,
+                full_matrix=body.get("full_matrix") is True,
+            )
+            capabilities = validate_provider_capabilities({
+                **result,
+                "tested_at": iso_now(),
+            }, f"provider {provider['id']} capabilities")
+        except ValueError as error:
+            self.send_json(400, {"error": str(error)})
+            return
+        except Exception as error:
+            self.send_json(502, {"error": f"能力探测失败：{error}"})
+            return
+        self.send_json(200, {
+            "ok": bool(capabilities.get("supports_generate")),
+            "elapsed": round(monotonic() - started, 1),
+            "provider_id": provider["id"],
+            "capabilities": capabilities,
         })
 
     def handle_admin_reset_provider_health(self):
@@ -498,6 +545,7 @@ def default_model_routes():
             "upstream_model": "gpt-image-2",
             "supports_generate": True,
             "supports_edit": True,
+            "capabilities": default_capabilities(),
             "headers_preset": None,
         })
     return {
@@ -529,15 +577,65 @@ def public_models(routes):
             continue
         if not enabled_providers(model):
             continue
+        capabilities = aggregate_model_capabilities(model)
         models.append({
             "id": model["id"],
             "label": model.get("label") or model["id"],
-            "supports_edit": bool(model.get("supports_edit")),
-            "sizes": model.get("sizes", DEFAULT_SIZES),
-            "qualities": model.get("qualities", DEFAULT_QUALITIES),
-            "formats": model.get("formats", DEFAULT_FORMATS),
+            "supports_edit": capabilities["supports_edit"],
+            "sizes": capabilities["sizes"],
+            "qualities": capabilities["qualities"],
+            "formats": capabilities["formats"],
         })
     return models
+
+
+def aggregate_model_capabilities(model):
+    providers = enabled_providers(model)
+
+    sizes = []
+    qualities = []
+    formats = []
+    supports_edit = False
+
+    for provider in providers:
+        if isinstance(provider.get("capabilities"), dict):
+            capabilities = provider["capabilities"]
+            if capabilities.get("supports_generate") is False:
+                continue
+            source_sizes = capabilities.get("sizes", [])
+            source_qualities = capabilities.get("qualities", [])
+            source_formats = capabilities.get("formats", [])
+            provider_supports_edit = capabilities.get("supports_edit") is True
+        else:
+            if provider.get("supports_generate") is False:
+                continue
+            source_sizes = model.get("sizes", DEFAULT_SIZES)
+            source_qualities = model.get("qualities", DEFAULT_QUALITIES)
+            source_formats = model.get("formats", DEFAULT_FORMATS)
+            provider_supports_edit = (
+                provider.get("supports_edit") is not False
+                and bool(model.get("supports_edit"))
+            )
+
+        merge_unique(sizes, source_sizes)
+        merge_unique(qualities, source_qualities)
+        merge_unique(formats, source_formats)
+        supports_edit = supports_edit or provider_supports_edit
+
+    return {
+        "supports_edit": supports_edit,
+        "sizes": sizes,
+        "qualities": qualities,
+        "formats": formats,
+    }
+
+
+def merge_unique(target, values):
+    if not isinstance(values, list):
+        return
+    for value in values:
+        if isinstance(value, str) and value and value not in target:
+            target.append(value)
 
 
 def enabled_providers(model):
@@ -616,8 +714,67 @@ def validate_provider(provider, allow_masked_key=False):
         "upstream_model": upstream_model,
         "supports_generate": provider.get("supports_generate") is not False,
         "supports_edit": provider.get("supports_edit") is not False,
+        "capabilities": validate_provider_capabilities(provider.get("capabilities"), f"provider {provider_id} capabilities"),
         "headers_preset": headers_preset or None,
     }
+
+
+def default_capabilities():
+    return {
+        "supports_generate": True,
+        "supports_edit": True,
+        "sizes": list(DEFAULT_SIZES),
+        "qualities": list(DEFAULT_QUALITIES),
+        "formats": list(DEFAULT_FORMATS),
+        "combinations": [],
+        "matrix_complete": False,
+        "tested_at": None,
+        "tests": [],
+    }
+
+
+def validate_provider_capabilities(value, label):
+    if value is None:
+        return None
+    if not isinstance(value, dict):
+        raise ValueError(f"{label} 必须是对象。")
+    combinations = []
+    for item in value.get("combinations", []):
+        if not isinstance(item, dict):
+            continue
+        mode = str(item.get("mode") or "").strip()
+        size = str(item.get("size") or "").strip()
+        quality = str(item.get("quality") or "").strip()
+        output_format = str(item.get("format") or "").strip()
+        if mode in {"generate", "edit"} and size and quality and output_format:
+            combinations.append({
+                "mode": mode,
+                "size": size,
+                "quality": quality,
+                "format": output_format,
+            })
+    tests = []
+    for item in value.get("tests", []):
+        if isinstance(item, dict):
+            tests.append(dict(item))
+    tested_at = value.get("tested_at")
+    return {
+        "supports_generate": value.get("supports_generate") is not False,
+        "supports_edit": value.get("supports_edit") is True,
+        "sizes": clean_string_list(value.get("sizes"), [], f"{label} sizes"),
+        "qualities": clean_string_list(value.get("qualities"), [], f"{label} qualities"),
+        "formats": clean_string_list(value.get("formats"), [], f"{label} formats"),
+        "combinations": combinations,
+        "matrix_complete": value.get("matrix_complete") is True,
+        "tested_at": str(tested_at).strip() if tested_at else None,
+        "tests": tests,
+    }
+
+
+def clean_probe_candidates(value, default, label):
+    if value is None:
+        return list(default)
+    return clean_string_list(value, default, f"探测候选 {label}")
 
 
 def clean_required_string(mapping, key, label):
@@ -630,7 +787,7 @@ def clean_required_string(mapping, key, label):
 def clean_string_list(value, default, label):
     if value is None:
         return list(default)
-    if not isinstance(value, list) or not value:
+    if not isinstance(value, list) or (not value and default):
         raise ValueError(f"{label} 必须是非空字符串数组。")
     cleaned = []
     for item in value:

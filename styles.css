@@ -1264,6 +1264,29 @@ select:disabled, input:disabled, textarea:disabled {
   gap: 6px;
 }
 .chip-add input { flex: 1; }
+.derived-capabilities,
+.provider-capabilities {
+  display: grid;
+  gap: 10px;
+}
+.derived-capabilities {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+.provider-capabilities {
+  margin-top: 12px;
+  padding-top: 12px;
+  border-top: 1px solid var(--hairline-soft);
+}
+.capability-block {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
+}
+.capability-chip {
+  background: var(--surface-card);
+  color: var(--ink);
+}
 
 .providers-block {
   border-top: 1px dashed var(--hairline);
@@ -2157,9 +2180,16 @@ select:disabled, input:disabled, textarea:disabled {
   background: rgba(242, 103, 87, 0.12);
   color: #ffd2cb;
 }
+.admin-dashboard .capability-chip {
+  background: rgba(242, 103, 87, 0.12);
+  color: #ffd2cb;
+}
 .admin-dashboard .chip-remove {
   background: rgba(255, 255, 255, 0.08);
   color: var(--studio-text);
+}
+.admin-dashboard .provider-capabilities {
+  border-color: var(--studio-line);
 }
 .admin-dashboard .admin-editor,
 .admin-dashboard .admin-result {
@@ -2179,6 +2209,9 @@ select:disabled, input:disabled, textarea:disabled {
   }
   .hero-aside { justify-self: stretch; max-width: none; }
   .studio-shell {
+    grid-template-columns: 1fr;
+  }
+  .derived-capabilities {
     grid-template-columns: 1fr;
   }
   .studio-sidebar {

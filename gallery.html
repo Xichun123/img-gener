@@ -8,67 +8,76 @@
   <link rel="icon" type="image/png" href="favicon.png">
   <link rel="apple-touch-icon" href="apple-touch-icon.png">
   <link rel="manifest" href="manifest.webmanifest">
-  <meta name="theme-color" content="#faf9f5">
+  <meta name="theme-color" content="#0d1110">
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:wght@400;500;600&family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="styles.css">
 </head>
-<body>
-  <header class="topnav">
-    <div class="topnav-inner">
-      <a class="brand" href="index.html" aria-label="Img Gener 首页">
-        <svg class="brand-mark" viewBox="0 0 16 16" aria-hidden="true" focusable="false">
+<body class="studio-dashboard gallery-dashboard">
+  <div class="studio-shell">
+    <aside class="studio-sidebar" aria-label="主导航">
+      <a class="studio-brand" href="index.html" aria-label="Img Gener 首页">
+        <svg class="studio-brand-mark" viewBox="0 0 16 16" aria-hidden="true" focusable="false">
           <path fill="currentColor" d="M8 0 9.2 6.8 16 8 9.2 9.2 8 16 6.8 9.2 0 8 6.8 6.8z"/>
         </svg>
         <span>Img Gener</span>
       </a>
-      <nav class="topnav-nav" aria-label="主导航">
-        <a class="topnav-link" href="index.html">生成</a>
-        <a class="topnav-link is-active" href="gallery.html">案例图库</a>
-        <a class="topnav-link" href="admin.html">管理</a>
+      <nav class="studio-nav">
+        <a class="studio-nav-link" href="index.html">
+          <span aria-hidden="true">✦</span>
+          <span>生成器</span>
+        </a>
+        <a class="studio-nav-link is-active" href="gallery.html">
+          <span aria-hidden="true">◴</span>
+          <span>图库</span>
+        </a>
+        <a class="studio-nav-link" href="admin.html">
+          <span aria-hidden="true">⚙</span>
+          <span>管理</span>
+        </a>
       </nav>
-      <span class="topnav-spacer"></span>
-      <div class="topnav-actions">
-        <a class="ghost-btn small-btn" href="index.html">返回生成台</a>
+      <div class="studio-sidebar-foot">
+        <small>创作工作台</small>
       </div>
+    </aside>
+
+    <div class="studio-main">
+      <header class="studio-topbar">
+        <div class="topbar-metric">
+          <span>当前位置</span>
+          <strong>案例图库</strong>
+        </div>
+        <div class="topbar-metric">
+          <span>使用方式</span>
+          <strong>点击图片填入提示词</strong>
+        </div>
+        <div class="topbar-metric">
+          <span>返回</span>
+          <strong><a href="index.html">生成器</a></strong>
+        </div>
+      </header>
+
+      <main class="studio-content">
+        <section class="studio-page-hero">
+          <div>
+            <p class="panel-kicker">Inspiration Gallery</p>
+            <h1>案例图库</h1>
+          </div>
+          <p>点击任意效果图，自动填入对应提示词并跳回生成台。支持按标题、分类、关键词搜索。</p>
+        </section>
+
+        <section class="gallery-toolbar studio-panel" aria-label="筛选与搜索">
+          <input id="caseSearch" type="search" placeholder="搜索：标题 / 提示词 / 来源" aria-label="搜索效果图">
+          <div id="caseCategories" class="category-chips" role="tablist" aria-label="分类筛选"></div>
+          <span id="caseCount" class="gallery-count" aria-live="polite"></span>
+        </section>
+
+        <section class="gallery-page-grid" id="caseGallery" aria-label="效果图图库"></section>
+        <div id="caseSentinel" class="gallery-sentinel" aria-hidden="true"></div>
+      </main>
     </div>
-  </header>
-
-  <main class="shell">
-    <section class="hero">
-      <div class="hero-text">
-        <span class="eyebrow">Inspiration Gallery</span>
-        <h1 class="display-xl">先看见，再创造。</h1>
-        <p class="lead">点击任意效果图，自动填入对应提示词并跳回生成台。支持按标题、分类、关键词搜索。</p>
-      </div>
-    </section>
-
-    <section class="gallery-toolbar" aria-label="筛选与搜索">
-      <input id="caseSearch" type="search" placeholder="搜索：标题 / 提示词 / 来源" aria-label="搜索效果图">
-      <div id="caseCategories" class="category-chips" role="tablist" aria-label="分类筛选"></div>
-      <span id="caseCount" class="gallery-count" aria-live="polite"></span>
-    </section>
-
-    <section class="gallery-page-grid" id="caseGallery" aria-label="效果图图库"></section>
-    <div id="caseSentinel" class="gallery-sentinel" aria-hidden="true"></div>
-  </main>
-
-  <footer class="footer">
-    <div class="footer-inner">
-      <a class="brand" href="index.html" aria-label="Img Gener">
-        <svg class="brand-mark" viewBox="0 0 16 16" aria-hidden="true" focusable="false">
-          <path fill="currentColor" d="M8 0 9.2 6.8 16 8 9.2 9.2 8 16 6.8 9.2 0 8 6.8 6.8z"/>
-        </svg>
-        <span>Img Gener</span>
-      </a>
-      <small>本地优先 · 自托管 · 多上游路由</small>
-      <div class="footer-links">
-        <a href="index.html">生成</a>
-        <a href="admin.html">管理</a>
-      </div>
-    </div>
-  </footer>
+  </div>
 
   <script src="prompt-gallery.js"></script>
 </body>

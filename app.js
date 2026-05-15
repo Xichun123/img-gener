@@ -1,7 +1,5 @@
 const form = document.querySelector('#generateForm');
 const siteKeyInput = document.querySelector('#siteKey');
-const keyStatus = document.querySelector('#keyStatus');
-const navKeyStatus = document.querySelector('#navKeyStatus');
 const modeInput = document.querySelector('#mode');
 const modelChoices = document.querySelector('#modelChoices');
 const modelHint = document.querySelector('#modelHint');
@@ -29,6 +27,7 @@ const historyPanel = document.querySelector('#historyPanel');
 const historyList = document.querySelector('#historyList');
 const historyMeta = document.querySelector('#historyMeta');
 const historyClearBtn = document.querySelector('#historyClearBtn');
+const modeTabs = Array.from(document.querySelectorAll('input[name="modeTabs"]'));
 
 const MAX_TOTAL_IMAGES = 6;
 const HISTORY_KEY = 'img-gener.history';
@@ -73,6 +72,13 @@ resetBtn.addEventListener('click', () => {
 modelChoices.addEventListener('change', updateModelProfile);
 imageCountInput.addEventListener('change', updateModelProfile);
 modeInput.addEventListener('change', updateMode);
+modeTabs.forEach((input) => {
+  input.addEventListener('change', () => {
+    if (!input.checked) return;
+    modeInput.value = input.value;
+    updateMode();
+  });
+});
 siteKeyInput.addEventListener('change', refreshKeyStatus);
 siteKeyInput.addEventListener('blur', refreshKeyStatus);
 siteKeyInput.addEventListener('input', () => {
@@ -499,15 +505,13 @@ function formatElapsed(ms) {
 
 function updateKeyStatus(siteKeyInfo) {
   if (!siteKeyInfo) return;
-  keyStatus.textContent = `当前 key 已用 ${siteKeyInfo.used}/${siteKeyInfo.limit} 次，剩余 ${siteKeyInfo.remaining} 次。`;
-  if (navKeyStatus) {
-    navKeyStatus.textContent = `剩余 ${siteKeyInfo.remaining} 次`;
-    navKeyStatus.className = `pill ${siteKeyInfo.remaining > 0 ? 'ok' : 'error'}`;
-  }
 }
 
 function updateMode() {
   const isEdit = modeInput.value === 'edit';
+  for (const tab of modeTabs) {
+    tab.checked = tab.value === modeInput.value;
+  }
   imageUploadLabel.classList.toggle('hidden', !isEdit);
   sourceImageInput.required = isEdit && !inlineEditSource;
   for (const input of modelInputs) {
@@ -588,14 +592,7 @@ function useImageForEdit(item) {
 
 async function refreshKeyStatus() {
   const siteKey = siteKeyInput.value.trim();
-  if (!siteKey) {
-    keyStatus.textContent = '请输入 key。';
-    if (navKeyStatus) {
-      navKeyStatus.textContent = '未输入 key';
-      navKeyStatus.className = 'pill';
-    }
-    return;
-  }
+  if (!siteKey) return;
 
   try {
     const response = await fetch('/api/key-status', {
@@ -607,11 +604,7 @@ async function refreshKeyStatus() {
     if (!response.ok) throw new Error(payload.error || '查询失败');
     updateKeyStatus(payload);
   } catch (error) {
-    keyStatus.textContent = error.message;
-    if (navKeyStatus) {
-      navKeyStatus.textContent = 'key 无效';
-      navKeyStatus.className = 'pill error';
-    }
+    console.warn('key status check failed', error);
   }
 }
 

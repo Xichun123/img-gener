@@ -135,7 +135,7 @@ function showAdmin() {
 
 async function attemptLogin(token) {
   if (!token) {
-    showLoginError('请输入 ADMIN_TOKEN');
+    showLoginError('请输入管理口令');
     return;
   }
   loginError.hidden = true;

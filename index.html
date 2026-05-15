@@ -8,209 +8,215 @@
   <link rel="icon" type="image/png" href="favicon.png">
   <link rel="apple-touch-icon" href="apple-touch-icon.png">
   <link rel="manifest" href="manifest.webmanifest">
-  <meta name="theme-color" content="#faf9f5">
+  <meta name="theme-color" content="#0d1110">
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:wght@400;500;600&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="styles.css">
 </head>
-<body>
-  <header class="topnav">
-    <div class="topnav-inner">
-      <a class="brand" href="index.html" aria-label="Img Gener 首页">
-        <svg class="brand-mark" viewBox="0 0 16 16" aria-hidden="true" focusable="false">
+<body class="studio-dashboard">
+  <div class="studio-shell">
+    <aside class="studio-sidebar" aria-label="主导航">
+      <a class="studio-brand" href="index.html" aria-label="Img Gener 首页">
+        <svg class="studio-brand-mark" viewBox="0 0 16 16" aria-hidden="true" focusable="false">
           <path fill="currentColor" d="M8 0 9.2 6.8 16 8 9.2 9.2 8 16 6.8 9.2 0 8 6.8 6.8z"/>
         </svg>
         <span>Img Gener</span>
       </a>
-      <nav class="topnav-nav" aria-label="主导航">
-        <a class="topnav-link is-active" href="index.html">生成</a>
-        <a class="topnav-link" href="gallery.html">案例图库</a>
-        <a class="topnav-link" href="admin.html">管理</a>
+      <nav class="studio-nav">
+        <a class="studio-nav-link is-active" href="index.html">
+          <span aria-hidden="true">✦</span>
+          <span>生成器</span>
+        </a>
+        <a class="studio-nav-link" href="gallery.html">
+          <span aria-hidden="true">◴</span>
+          <span>图库</span>
+        </a>
+        <a class="studio-nav-link" href="admin.html">
+          <span aria-hidden="true">⚙</span>
+          <span>管理</span>
+        </a>
       </nav>
-      <span class="topnav-spacer"></span>
-      <div class="topnav-actions">
-        <span id="navKeyStatus" class="pill">未输入 key</span>
+      <div class="studio-sidebar-foot">
+        <small>多上游路由</small>
       </div>
-    </div>
-  </header>
+    </aside>
 
-  <main class="shell">
-    <section class="hero">
-      <div class="hero-text">
-        <span class="eyebrow">Image Studio</span>
-        <h1 class="display-xl">把想法变成图像。</h1>
-        <p class="lead">多模型并行生成，一次请求对比结果。本地保留预览，按成功图片数扣额。</p>
-      </div>
-      <aside class="hero-aside">
-        <div class="status-card">
-          <span class="status-dot" id="modeIndicator"></span>
-          <div>
-            <strong>本地优先</strong>
-            <small>生成结果仅在当前页面预览，可下载或加入编辑链路。</small>
+    <div class="studio-main">
+      <header class="studio-topbar">
+        <div class="topbar-metric">
+          <span>运行状态</span>
+          <strong><i class="status-dot" id="modeIndicator"></i> 正常</strong>
+        </div>
+        <div class="topbar-metric">
+          <span>当前会话</span>
+          <strong>显式选择模型</strong>
+        </div>
+        <div class="topbar-metric">
+          <span>额度</span>
+          <div class="topbar-key">
+            <input id="siteKey" type="password" value="" autocomplete="off" placeholder="输入 key" aria-label="公共生成 Key">
           </div>
         </div>
-      </aside>
-    </section>
+      </header>
 
-    <section class="workspace">
-      <form id="generateForm" class="card card-cream form-card" novalidate>
-        <header class="card-heading">
-          <h2>生成设置</h2>
-          <div class="card-heading-actions">
-            <button type="button" id="resetBtn" class="ghost-btn small-btn">重置</button>
-          </div>
-        </header>
+      <main class="studio-workspace">
+        <section class="studio-panel composer-panel">
+          <form id="generateForm" class="studio-form" novalidate>
+            <header class="panel-heading">
+              <div>
+                <p class="panel-kicker">Prompt Console</p>
+                <h1>生成器</h1>
+              </div>
+              <button type="button" id="resetBtn" class="ghost-btn small-btn">重置</button>
+            </header>
 
-        <label class="field">
-          <span>Key</span>
-          <input id="siteKey" type="password" value="" autocomplete="off" placeholder="输入你分配的 key">
-          <small id="keyStatus" class="field-note">请输入你分配的 key。</small>
-        </label>
-
-        <div class="two-col">
-          <label class="field">
-            <span>模式</span>
-            <select id="mode">
-              <option value="generate">文生图</option>
-              <option value="edit">图生图 / 图片编辑</option>
-            </select>
-          </label>
-          <label class="field">
-            <span>每个模型张数</span>
-            <select id="imageCount">
-              <option value="1">1 张</option>
-              <option value="2">2 张</option>
-              <option value="3">3 张</option>
-              <option value="4">4 张</option>
-            </select>
-          </label>
-        </div>
-
-        <div class="field">
-          <span>模型</span>
-          <div id="modelChoices" class="model-choices">
-            <span class="field-note">正在加载模型...</span>
-          </div>
-          <small id="modelHint" class="field-note">可同时选择多个模型；单次最多 6 张。</small>
-        </div>
-
-        <div class="two-col">
-          <label class="field">
-            <span>尺寸</span>
-            <select id="size">
-              <option value="1024x1024">1024×1024 正方</option>
-              <option value="1024x1536">1024×1536 竖图</option>
-              <option value="1536x1024">1536×1024 横图</option>
-              <option value="1792x1024">1792×1024 宽屏</option>
-              <option value="1024x1792">1024×1792 长竖图</option>
-              <option value="2048x2048">2048×2048 高清方图</option>
-              <option value="2048x3072">2048×3072 高清竖图</option>
-              <option value="3072x2048">3072×2048 高清横图</option>
-              <option value="3840x2160">3840×2160 4K 横图</option>
-              <option value="2160x3840">2160×3840 4K 竖图</option>
-              <option value="auto">auto 自动</option>
-            </select>
-          </label>
-
-          <label class="field">
-            <span>质量</span>
-            <select id="quality">
-              <option value="low">low 快速测试</option>
-              <option value="medium">medium</option>
-              <option value="high">high</option>
-              <option value="auto">auto</option>
-            </select>
-          </label>
-        </div>
-
-        <label class="field">
-          <span>输出格式</span>
-          <select id="outputFormat">
-            <option value="png">png</option>
-            <option value="jpeg">jpeg</option>
-            <option value="webp">webp</option>
-          </select>
-        </label>
-
-        <div class="field">
-          <span>提示词</span>
-          <div id="promptTemplatePanel" class="template-panel hidden">
-            <input id="promptTemplateFilter" type="search" placeholder="搜索模板：标题 / 分类 / 关键词" aria-label="搜索提示词模板">
-            <div class="template-row">
-              <select id="promptTemplate" aria-label="提示词模板">
-                <option value="">选择提示词模板</option>
-              </select>
-              <button type="button" id="useTemplateBtn" class="ghost-btn small-btn">填入</button>
-              <button type="button" id="appendTemplateBtn" class="ghost-btn small-btn">追加</button>
+            <div class="mode-tabs">
+              <label>
+                <input type="radio" name="modeTabs" value="generate" checked>
+                <span>文生图</span>
+              </label>
+              <label>
+                <input type="radio" name="modeTabs" value="edit">
+                <span>图生图 / 图片编辑</span>
+              </label>
             </div>
-            <small id="templatePreview" class="field-note"></small>
+
+            <label class="field">
+              <span>提示词</span>
+              <textarea id="prompt" rows="8" placeholder="描述你想生成的图片，例如：赛博朋克风格的猫，站在雨夜霓虹街道上。" required></textarea>
+            </label>
+
+            <div class="field">
+              <span>提示词模板</span>
+              <div id="promptTemplatePanel" class="template-panel hidden">
+                <input id="promptTemplateFilter" type="search" placeholder="搜索模板：标题 / 分类 / 关键词" aria-label="搜索提示词模板">
+                <div class="template-row">
+                  <select id="promptTemplate" aria-label="提示词模板">
+                    <option value="">选择提示词模板</option>
+                  </select>
+                  <button type="button" id="useTemplateBtn" class="ghost-btn small-btn">填入</button>
+                  <button type="button" id="appendTemplateBtn" class="ghost-btn small-btn">追加</button>
+                </div>
+                <small id="templatePreview" class="field-note"></small>
+              </div>
+              <a class="gallery-link" href="gallery.html">浏览效果图图库找灵感</a>
+            </div>
+
+            <label id="imageUploadLabel" class="field hidden upload-field">
+              <span>参考图（图生图 / 图片编辑）</span>
+              <input id="sourceImage" type="file" accept="image/png,image/jpeg,image/webp">
+              <small id="imageHint" class="field-note">支持 PNG / JPEG / WebP，可拖拽或 Ctrl/⌘+V 粘贴；图片会发送到后端进行编辑。</small>
+              <small id="editSourceInfo" class="field-note hidden"></small>
+            </label>
+
+            <section class="settings-matrix" aria-label="参数设置">
+              <label class="field hidden">
+                <span>模式</span>
+                <select id="mode">
+                  <option value="generate">文生图</option>
+                  <option value="edit">图生图 / 图片编辑</option>
+                </select>
+              </label>
+
+              <label class="field">
+                <span>每个模型张数</span>
+                <select id="imageCount">
+                  <option value="1">1 张</option>
+                  <option value="2">2 张</option>
+                  <option value="3">3 张</option>
+                  <option value="4">4 张</option>
+                </select>
+              </label>
+
+              <label class="field">
+                <span>尺寸</span>
+                <select id="size">
+                  <option value="1024x1024">1024×1024 正方</option>
+                  <option value="1024x1536">1024×1536 竖图</option>
+                  <option value="1536x1024">1536×1024 横图</option>
+                  <option value="1792x1024">1792×1024 宽屏</option>
+                  <option value="1024x1792">1024×1792 长竖图</option>
+                  <option value="2048x2048">2048×2048 高清方图</option>
+                  <option value="2048x3072">2048×3072 高清竖图</option>
+                  <option value="3072x2048">3072×2048 高清横图</option>
+                  <option value="3840x2160">3840×2160 4K 横图</option>
+                  <option value="2160x3840">2160×3840 4K 竖图</option>
+                  <option value="auto">auto 自动</option>
+                </select>
+              </label>
+
+              <label class="field">
+                <span>质量</span>
+                <select id="quality">
+                  <option value="low">low 快速测试</option>
+                  <option value="medium">medium</option>
+                  <option value="high">high</option>
+                  <option value="auto">auto</option>
+                </select>
+              </label>
+
+              <label class="field">
+                <span>输出格式</span>
+                <select id="outputFormat">
+                  <option value="png">png</option>
+                  <option value="jpeg">jpeg</option>
+                  <option value="webp">webp</option>
+                </select>
+              </label>
+            </section>
+
+            <div class="field model-field">
+              <span>模型</span>
+              <div id="modelChoices" class="model-choices">
+                <span class="field-note">正在加载模型...</span>
+              </div>
+              <small id="modelHint" class="field-note">可同时选择多个模型；单次最多 6 张。</small>
+            </div>
+
+            <div class="form-actions">
+              <button id="generateBtn" class="primary-btn" type="submit">开始生成</button>
+            </div>
+          </form>
+        </section>
+
+        <section class="studio-panel result-panel">
+          <header class="panel-heading compact">
+            <div>
+              <p class="panel-kicker">Results</p>
+              <h2>生成结果</h2>
+            </div>
+            <span id="requestState" class="pill">等待生成</span>
+          </header>
+
+          <div id="previewBox" class="preview-box empty">
+            <div>
+              <strong>还没有图片</strong>
+              <p>填写提示词后点击「开始生成」。</p>
+            </div>
           </div>
-          <a class="gallery-link" href="gallery.html">浏览效果图图库找灵感</a>
-          <textarea id="prompt" rows="8" placeholder="描述你想生成的图片，例如：赛博朋克风格的猫，站在雨夜霓虹街道上。" required></textarea>
-        </div>
-
-        <label id="imageUploadLabel" class="field hidden">
-          <span>上传图片</span>
-          <input id="sourceImage" type="file" accept="image/png,image/jpeg,image/webp">
-          <small id="imageHint" class="field-note">支持 PNG / JPEG / WebP，可拖拽或 Ctrl/⌘+V 粘贴；图片会发送到后端进行编辑。</small>
-          <small id="editSourceInfo" class="field-note hidden"></small>
-        </label>
-
-        <div class="form-actions">
-          <button id="generateBtn" class="primary-btn" type="submit">开始生成</button>
-          <small id="formHint" class="form-hint">多模型或多张会按成功图片数扣次数；Ctrl/⌘+Enter 也可提交。</small>
-        </div>
-      </form>
-
-      <section class="card card-dark preview-card">
-        <header class="card-heading">
-          <h2>生成结果</h2>
-          <span id="requestState" class="pill">等待生成</span>
-        </header>
-        <div id="previewBox" class="preview-box empty">
-          <div>
-            <strong>还没有图片</strong>
-            <p>填写提示词后点击「开始生成」。</p>
+          <div id="metaBox" class="meta-box hidden"></div>
+          <div class="review-actions">
+            <a id="downloadBtn" class="ghost-btn small-btn disabled" href="#" download>下载第一张</a>
           </div>
-        </div>
-        <div id="metaBox" class="meta-box hidden"></div>
-        <div class="review-actions">
-          <a id="downloadBtn" class="ghost-btn small-btn disabled" href="#" download>下载第一张</a>
-        </div>
-      </section>
-    </section>
+        </section>
 
-    <details id="historyPanel" class="history-panel hidden">
-      <summary>
-        <span class="history-summary-title">
-          <h2>生成历史</h2>
-          <small id="historyMeta" class="hint"></small>
-        </span>
-        <span class="pill">本机本浏览器</span>
-      </summary>
-      <div id="historyList" class="history-list"></div>
-      <div class="history-footer">
-        <button type="button" id="historyClearBtn" class="ghost-btn small-btn">清空历史</button>
-      </div>
-    </details>
-  </main>
-
-  <footer class="footer">
-    <div class="footer-inner">
-      <a class="brand" href="index.html" aria-label="Img Gener">
-        <svg class="brand-mark" viewBox="0 0 16 16" aria-hidden="true" focusable="false">
-          <path fill="currentColor" d="M8 0 9.2 6.8 16 8 9.2 9.2 8 16 6.8 9.2 0 8 6.8 6.8z"/>
-        </svg>
-        <span>Img Gener</span>
-      </a>
-      <small>本地优先 · 自托管 · 多上游路由</small>
-      <div class="footer-links">
-        <a href="gallery.html">案例图库</a>
-        <a href="admin.html">管理</a>
-      </div>
+        <details id="historyPanel" class="studio-panel history-panel hidden">
+          <summary>
+            <span class="history-summary-title">
+              <h2>生成历史</h2>
+              <small id="historyMeta" class="hint"></small>
+            </span>
+            <span class="pill">本机本浏览器</span>
+          </summary>
+          <div id="historyList" class="history-list"></div>
+          <div class="history-footer">
+            <button type="button" id="historyClearBtn" class="ghost-btn small-btn">清空历史</button>
+          </div>
+        </details>
+      </main>
     </div>
-  </footer>
+  </div>
 
   <script src="app.js"></script>
 </body>

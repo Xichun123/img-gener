@@ -6,6 +6,7 @@ Supports OpenAI and Gemini native protocols.
 import base64
 import concurrent.futures
 import json
+import random
 import secrets
 import threading
 import time
@@ -42,6 +43,8 @@ _PROVIDER_HEALTH_LOCK = threading.Lock()
 _PROVIDER_HEALTH = {}
 _PROVIDER_FAILURE_THRESHOLD = 3
 _PROVIDER_CIRCUIT_SECONDS = 300
+_PROBE_GUARD_DELAY_RANGE = (8, 18)
+_PROBE_GUARD_MAX_THROTTLED_TESTS = 3
 
 
 def init_executor(max_workers: int = 4):
@@ -402,6 +405,7 @@ def probe_provider_capabilities(
     successful_formats = set()
     combinations = []
     tests = []
+    throttle_state = {"active": False, "count": 0, "reason": None, "stopped": False}
 
     planned = _build_probe_plan(
         sizes,
@@ -416,6 +420,29 @@ def probe_provider_capabilities(
     total_steps = len(planned)
 
     def run_probe(mode: str, size: str, quality: str, output_format: str) -> bool:
+        if throttle_state["stopped"]:
+            return False
+        if throttle_state["active"]:
+            if throttle_state["count"] >= _PROBE_GUARD_MAX_THROTTLED_TESTS:
+                throttle_state["stopped"] = True
+                if progress_callback:
+                    progress_callback({
+                        "type": "guard_stop",
+                        "completed": len(tests),
+                        "total": total_steps,
+                        "reason": throttle_state["reason"] or "上游疑似风控 / 限流。",
+                    })
+                return False
+            delay = random.uniform(*_PROBE_GUARD_DELAY_RANGE)
+            if progress_callback:
+                progress_callback({
+                    "type": "guard_wait",
+                    "completed": len(tests),
+                    "total": total_steps,
+                    "delay": round(delay, 1),
+                    "reason": throttle_state["reason"] or "上游疑似风控 / 限流。",
+                })
+            time.sleep(delay)
         if progress_callback:
             progress_callback({
                 "type": "step_start",
@@ -442,6 +469,11 @@ def probe_provider_capabilities(
         started = time.monotonic()
         result = _call_provider(provider, model_id, task)
         ok = not result.get("error")
+        guard_reason = _probe_guard_reason(result.get("error"))
+        if guard_reason:
+            throttle_state["active"] = True
+            throttle_state["count"] = int(throttle_state["count"]) + 1
+            throttle_state["reason"] = guard_reason
         tests.append({
             "mode": mode,
             "size": size,
@@ -450,6 +482,7 @@ def probe_provider_capabilities(
             "ok": ok,
             "elapsed": round(time.monotonic() - started, 1),
             **({"error": result.get("error")} if result.get("error") else {}),
+            **({"guard_reason": guard_reason} if guard_reason else {}),
         })
         if ok:
             successful_sizes.add(size)
@@ -476,6 +509,7 @@ def probe_provider_capabilities(
                 "success_count": sum(1 for test in tests if test.get("ok")),
                 "elapsed": tests[-1]["elapsed"],
                 **({"error": result.get("error")} if result.get("error") else {}),
+                **({"guard_reason": guard_reason} if guard_reason else {}),
             })
         return ok
 
@@ -483,19 +517,29 @@ def probe_provider_capabilities(
         for item in planned:
             if item["mode"] == "generate":
                 run_probe(item["mode"], item["size"], item["quality"], item["format"])
+                if throttle_state["stopped"]:
+                    break
     else:
         for size in sizes:
             run_probe("generate", size, preferred_quality, preferred_format)
+            if throttle_state["stopped"]:
+                break
         working_size = _pick_preferred(list(successful_sizes) or sizes, preferred_size)
-        for quality in qualities:
-            run_probe("generate", working_size, quality, preferred_format)
+        if not throttle_state["stopped"]:
+            for quality in qualities:
+                run_probe("generate", working_size, quality, preferred_format)
+                if throttle_state["stopped"]:
+                    break
         working_quality = _pick_preferred(list(successful_qualities) or qualities, preferred_quality)
-        for output_format in formats:
-            run_probe("generate", working_size, working_quality, output_format)
+        if not throttle_state["stopped"]:
+            for output_format in formats:
+                run_probe("generate", working_size, working_quality, output_format)
+                if throttle_state["stopped"]:
+                    break
 
     supports_generate = any(test["mode"] == "generate" and test["ok"] for test in tests)
     supports_edit = False
-    if include_edit and supports_generate:
+    if include_edit and supports_generate and not throttle_state["stopped"]:
         edit_size = _pick_preferred(list(successful_sizes) or sizes, preferred_size)
         edit_quality = _pick_preferred(list(successful_qualities) or qualities, preferred_quality)
         edit_format = _pick_preferred(list(successful_formats) or formats, preferred_format)
@@ -509,6 +553,8 @@ def probe_provider_capabilities(
         "formats": sorted(successful_formats, key=formats.index),
         "combinations": combinations,
         "matrix_complete": bool(full_matrix),
+        "stopped_early": throttle_state["stopped"],
+        "stop_reason": throttle_state["reason"],
         "tests": tests,
     }
 
@@ -524,6 +570,19 @@ def estimate_provider_capability_probe_total(candidates: Dict[str, List[str]], i
     if include_edit:
         total += 1
     return total
+
+
+def _probe_guard_reason(error: Optional[str]) -> Optional[str]:
+    if not error:
+        return None
+    text = error.lower()
+    if "429" in text or "too many requests" in text:
+        return "上游返回 429 / Too Many Requests。"
+    if "<!doctype html" in text and ("cloudflare" in text or "error code:" in text or "too many requests" in text):
+        return "上游返回 HTML 风控页。"
+    if "error code: 1010" in text or "access denied" in text or "forbidden" in text:
+        return "上游疑似风控拒绝请求。"
+    return None
 
 
 def _build_probe_plan(

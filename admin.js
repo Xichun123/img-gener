@@ -435,8 +435,19 @@ function updateProbeProgress(event, model, provider) {
   if (event.type === 'progress') {
     const current = formatProbeTarget(event.current);
     probeProgressFill.style.width = `${percent}%`;
-    probeProgressText.textContent = `已完成 ${completed} / ${total} · 成功 ${event.success_count || 0}`;
-    appendProbeLog(`${event.ok ? '成功' : '失败'} · ${current}${event.error ? ` · ${event.error}` : ''}`);
+    const guardText = event.guard_reason ? ` · ${event.guard_reason}` : '';
+    probeProgressText.textContent = `已完成 ${completed} / ${total} · 成功 ${event.success_count || 0}${guardText}`;
+    appendProbeLog(`${event.ok ? '成功' : '失败'} · ${current}${event.guard_reason ? ` · ${event.guard_reason}` : ''}${event.error ? ` · ${event.error}` : ''}`);
+    return;
+  }
+  if (event.type === 'guard_wait') {
+    probeProgressText.textContent = `检测到风控，等待 ${event.delay}s 后再试 · ${event.reason}`;
+    appendProbeLog(`等待 · ${event.delay}s · ${event.reason}`);
+    return;
+  }
+  if (event.type === 'guard_stop') {
+    probeProgressText.textContent = `已停止连续探测 · ${event.reason}`;
+    appendProbeLog(`停止 · ${event.reason}`);
     return;
   }
   if (event.type === 'complete') {

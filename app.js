@@ -29,6 +29,11 @@ const historyList = document.querySelector('#historyList');
 const historyMeta = document.querySelector('#historyMeta');
 const historyClearBtn = document.querySelector('#historyClearBtn');
 const modeTabs = Array.from(document.querySelectorAll('input[name="modeTabs"]'));
+const imageLightbox = document.querySelector('#imageLightbox');
+const lightboxImage = document.querySelector('#lightboxImage');
+const lightboxCaption = document.querySelector('#lightboxCaption');
+const lightboxDownload = document.querySelector('#lightboxDownload');
+const lightboxClose = document.querySelector('.lightbox-close');
 
 const MAX_TOTAL_IMAGES = 6;
 const HISTORY_KEY = 'img-gener.history';
@@ -135,6 +140,11 @@ historyClearBtn?.addEventListener('click', () => {
 });
 
 historyList?.addEventListener('click', (event) => {
+  const previewImage = event.target.closest('img[data-preview-src]');
+  if (previewImage) {
+    openImageLightbox(previewImage.dataset.previewSrc, previewImage.dataset.previewCaption || previewImage.alt || '图片预览', previewImage.dataset.previewDownload || 'image.png');
+    return;
+  }
   const button = event.target.closest('button[data-action]');
   if (!button) return;
   const card = button.closest('article[data-id]');
@@ -144,6 +154,14 @@ historyList?.addEventListener('click', (event) => {
   if (action === 'delete') return deleteHistoryEntry(id);
   if (action === 'fill') return fillFromHistory(id);
   if (action === 'edit') return useHistoryAsEdit(id);
+});
+
+imageLightbox?.addEventListener('click', (event) => {
+  if (event.target === imageLightbox) closeImageLightbox();
+});
+lightboxClose?.addEventListener('click', closeImageLightbox);
+document.addEventListener('keydown', (event) => {
+  if (event.key === 'Escape' && imageLightbox && !imageLightbox.hidden) closeImageLightbox();
 });
 
 async function loadModels() {
@@ -321,6 +339,9 @@ function renderImages(items, errors = []) {
     const image = document.createElement('img');
     image.src = item.imageData;
     image.alt = item.prompt;
+    image.className = 'preview-image';
+    image.title = '点击查看大图';
+    image.addEventListener('click', () => openImageLightbox(item.imageData, `${item.model} · ${item.size || ''}`, buildFileName(item)));
     card.appendChild(image);
 
     const footer = document.createElement('div');
@@ -366,6 +387,24 @@ function setPreviewEmpty() {
   previewBox.className = 'preview-box empty';
   previewBox.innerHTML = '<div><strong>还没有图片</strong><p>填写提示词后点击“开始生成”。</p></div>';
   metaBox.classList.add('hidden');
+}
+
+function openImageLightbox(src, caption, fileName) {
+  if (!imageLightbox || !lightboxImage || !lightboxDownload) return;
+  lightboxImage.src = src;
+  lightboxImage.alt = caption || '图片预览';
+  lightboxCaption.textContent = caption || '';
+  lightboxDownload.href = src;
+  lightboxDownload.download = fileName || 'image.png';
+  imageLightbox.hidden = false;
+  document.body.classList.add('lightbox-open');
+}
+
+function closeImageLightbox() {
+  if (!imageLightbox || !lightboxImage) return;
+  imageLightbox.hidden = true;
+  lightboxImage.removeAttribute('src');
+  document.body.classList.remove('lightbox-open');
 }
 
 function setPreviewError(message) {
@@ -838,7 +877,7 @@ function renderHistory(items) {
     const time = formatHistoryDate(entry.createdAt);
     card.innerHTML = `
       <div class="history-card-thumb">
-        ${entry.thumb ? `<img src="${escapeHtml(entry.thumb)}" alt="${escapeHtml(entry.prompt || '')}" loading="lazy">` : ''}
+        ${entry.thumb ? `<img src="${escapeHtml(entry.thumb)}" alt="${escapeHtml(entry.prompt || '')}" loading="lazy" data-preview-src="${escapeHtml(entry.thumb)}" data-preview-caption="${escapeHtml(entry.model || '历史图片')}" data-preview-download="history-${escapeHtml(entry.id.slice(0, 8))}.webp">` : ''}
         <button type="button" class="history-card-delete" data-action="delete" aria-label="删除这一条">×</button>
       </div>
       <div class="history-card-body">

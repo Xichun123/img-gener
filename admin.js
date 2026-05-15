@@ -580,7 +580,8 @@ function appendProbeLog(line) {
 function formatProbeTarget(current) {
   if (!current) return '未知项目';
   const mode = current.mode === 'edit' ? '图生图' : '文生图';
-  return `${mode} · ${current.size} · ${current.quality} · ${current.format}`;
+  const model = current.model ? ` · ${current.model}` : '';
+  return `${mode}${model} · ${current.size} · ${current.quality} · ${current.format}`;
 }
 
 function applyRawJson() {

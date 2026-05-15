@@ -424,10 +424,10 @@ class Handler(http.server.BaseHTTPRequestHandler):
         body = self.read_json_body()
         if body is None:
             return
-        model_id = str(body.get("model_id") or "").strip()
         provider_id = str(body.get("provider_id") or "").strip()
-        if not model_id or not provider_id:
-            self.send_json(400, {"error": "model_id 和 provider_id 不能为空。"})
+        preferred_model_id = str(body.get("model_id") or "").strip()
+        if not provider_id:
+            self.send_json(400, {"error": "provider_id 不能为空。"})
             return
         try:
             candidates = {
@@ -435,10 +435,10 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 "qualities": clean_probe_candidates(body.get("qualities"), DEFAULT_QUALITIES, "qualities"),
                 "formats": clean_probe_candidates(body.get("formats"), DEFAULT_FORMATS, "formats"),
             }
-            model, provider = find_provider(get_model_routes(), model_id, provider_id)
+            model, provider = find_provider_for_probe(get_model_routes(), preferred_model_id, provider_id)
             validate_provider(provider, allow_masked_key=False)
             job = create_probe_job(
-                model_id,
+                model["id"],
                 provider_id,
                 upstream_client.estimate_provider_capability_probe_total(
                     candidates,
@@ -720,6 +720,26 @@ def find_provider(routes, model_id, provider_id):
     raise ValueError(f"模型不存在：{model_id}")
 
 
+def find_provider_for_probe(routes, preferred_model_id, provider_id):
+    if preferred_model_id:
+        try:
+            return find_provider(routes, preferred_model_id, provider_id)
+        except ValueError:
+            pass
+    matches = []
+    for model in routes.get("models", []):
+        for provider in model.get("providers", []):
+            if provider.get("id") == provider_id:
+                matches.append((model, provider))
+    if len(matches) == 1:
+        return matches[0]
+    if len(matches) > 1:
+        raise ValueError(f"provider id 不唯一：{provider_id}，请先保存并使用正确的内部模型 id。")
+    if preferred_model_id:
+        raise ValueError(f"模型不存在：{preferred_model_id}，且没有找到 provider：{provider_id}")
+    raise ValueError(f"provider 不存在：{provider_id}")
+
+
 def save_provider_capabilities(model_id, provider_id, capabilities):
     with _ROUTES_LOCK:
         routes = load_model_routes()
@@ -852,12 +872,13 @@ def run_probe_job(job_id, model_id, provider_id, candidates, include_edit, full_
         progress({
             "type": "start",
             "provider_id": provider["id"],
+            "upstream_model": provider["upstream_model"],
             "total": total,
             "delay_range": list(PROBE_BACKGROUND_DELAY_RANGE),
         })
         result = upstream_client.probe_provider_capabilities(
             provider,
-            model_id,
+            provider["upstream_model"],
             candidates,
             include_edit=include_edit,
             full_matrix=full_matrix,
@@ -878,6 +899,7 @@ def run_probe_job(job_id, model_id, provider_id, candidates, include_edit, full_
             "ok": bool(capabilities.get("supports_generate")),
             "elapsed": elapsed,
             "provider_id": provider["id"],
+            "upstream_model": provider["upstream_model"],
             "capabilities": capabilities,
             "saved": True,
         }

@@ -470,6 +470,7 @@ def probe_provider_capabilities(
                 "total": total_steps,
                 "current": {
                     "mode": mode,
+                    "model": provider.get("upstream_model") or model_id,
                     "size": size,
                     "quality": quality,
                     "format": output_format,
@@ -521,6 +522,7 @@ def probe_provider_capabilities(
                 "total": total_steps,
                 "current": {
                     "mode": mode,
+                    "model": provider.get("upstream_model") or model_id,
                     "size": size,
                     "quality": quality,
                     "format": output_format,

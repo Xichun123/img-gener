@@ -1385,6 +1385,30 @@ select:disabled, input:disabled, textarea:disabled {
   line-height: 1.55;
   white-space: pre-wrap;
 }
+.probe-progress {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin: 10px 0;
+}
+.probe-progress-bar {
+  height: 8px;
+  overflow: hidden;
+  border-radius: var(--r-pill);
+  background: rgba(20, 20, 19, 0.1);
+  border: 1px solid var(--hairline-soft);
+}
+.probe-progress-bar span {
+  display: block;
+  height: 100%;
+  width: 0%;
+  border-radius: inherit;
+  background: var(--primary);
+  transition: width 180ms ease;
+}
+.probe-progress small {
+  color: var(--muted);
+}
 
 .actions {
   display: flex;
@@ -2190,6 +2214,16 @@ select:disabled, input:disabled, textarea:disabled {
 }
 .admin-dashboard .provider-capabilities {
   border-color: var(--studio-line);
+}
+.admin-dashboard .probe-progress-bar {
+  background: rgba(255, 255, 255, 0.06);
+  border-color: var(--studio-line);
+}
+.admin-dashboard .probe-progress-bar span {
+  background: var(--studio-primary);
+}
+.admin-dashboard .probe-progress small {
+  color: var(--studio-muted);
 }
 .admin-dashboard .admin-editor,
 .admin-dashboard .admin-result {

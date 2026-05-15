@@ -355,6 +355,16 @@ class Handler(http.server.BaseHTTPRequestHandler):
             }
             from time import monotonic
             started = monotonic()
+            if body.get("stream") is True:
+                self.stream_provider_probe(
+                    provider,
+                    str(body.get("model_id") or "test-model"),
+                    candidates,
+                    body.get("include_edit") is not False,
+                    body.get("full_matrix") is True,
+                    started,
+                )
+                return
             result = upstream_client.probe_provider_capabilities(
                 provider,
                 str(body.get("model_id") or "test-model"),
@@ -378,6 +388,55 @@ class Handler(http.server.BaseHTTPRequestHandler):
             "provider_id": provider["id"],
             "capabilities": capabilities,
         })
+
+    def stream_provider_probe(self, provider, model_id, candidates, include_edit, full_matrix, started):
+        from time import monotonic
+        self.send_response(200)
+        self.send_cors_headers()
+        self.send_header("Content-Type", "application/x-ndjson; charset=utf-8")
+        self.send_header("Cache-Control", "no-store")
+        self.end_headers()
+
+        def write_event(payload):
+            self.wfile.write((json.dumps(payload, ensure_ascii=False) + "\n").encode("utf-8"))
+            self.wfile.flush()
+
+        total = upstream_client.estimate_provider_capability_probe_total(
+            candidates,
+            include_edit=include_edit,
+            full_matrix=full_matrix,
+        )
+        write_event({
+            "type": "start",
+            "provider_id": provider["id"],
+            "total": total,
+        })
+        try:
+            result = upstream_client.probe_provider_capabilities(
+                provider,
+                model_id,
+                candidates,
+                include_edit=include_edit,
+                full_matrix=full_matrix,
+                progress_callback=write_event,
+            )
+            capabilities = validate_provider_capabilities({
+                **result,
+                "tested_at": iso_now(),
+            }, f"provider {provider['id']} capabilities")
+            write_event({
+                "type": "complete",
+                "ok": bool(capabilities.get("supports_generate")),
+                "elapsed": round(monotonic() - started, 1),
+                "provider_id": provider["id"],
+                "capabilities": capabilities,
+            })
+        except Exception as error:
+            write_event({
+                "type": "error",
+                "error": f"能力探测失败：{error}",
+                "elapsed": round(monotonic() - started, 1),
+            })
 
     def handle_admin_reset_provider_health(self):
         if not self.require_admin():

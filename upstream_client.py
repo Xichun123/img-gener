@@ -338,6 +338,7 @@ def probe_provider_capabilities(
     candidates: Dict[str, List[str]],
     include_edit: bool = True,
     full_matrix: bool = False,
+    progress_callback=None,
 ) -> Dict:
     sizes = _clean_probe_values(candidates.get("sizes"), ["1024x1024"])
     qualities = _clean_probe_values(candidates.get("qualities"), ["low"])
@@ -352,7 +353,32 @@ def probe_provider_capabilities(
     combinations = []
     tests = []
 
+    planned = _build_probe_plan(
+        sizes,
+        qualities,
+        formats,
+        preferred_size,
+        preferred_quality,
+        preferred_format,
+        include_edit,
+        full_matrix,
+    )
+    total_steps = len(planned)
+
     def run_probe(mode: str, size: str, quality: str, output_format: str) -> bool:
+        if progress_callback:
+            progress_callback({
+                "type": "step_start",
+                "completed": len(tests),
+                "total": total_steps,
+                "current": {
+                    "mode": mode,
+                    "size": size,
+                    "quality": quality,
+                    "format": output_format,
+                },
+                "success_count": sum(1 for test in tests if test.get("ok")),
+            })
         task = {
             "prompt": "A simple red square icon on a white background.",
             "size": size,
@@ -385,13 +411,28 @@ def probe_provider_capabilities(
                 "quality": quality,
                 "format": output_format,
             })
+        if progress_callback:
+            progress_callback({
+                "type": "progress",
+                "completed": len(tests),
+                "total": total_steps,
+                "current": {
+                    "mode": mode,
+                    "size": size,
+                    "quality": quality,
+                    "format": output_format,
+                },
+                "ok": ok,
+                "success_count": sum(1 for test in tests if test.get("ok")),
+                "elapsed": tests[-1]["elapsed"],
+                **({"error": result.get("error")} if result.get("error") else {}),
+            })
         return ok
 
     if full_matrix:
-        for size in sizes:
-            for quality in qualities:
-                for output_format in formats:
-                    run_probe("generate", size, quality, output_format)
+        for item in planned:
+            if item["mode"] == "generate":
+                run_probe(item["mode"], item["size"], item["quality"], item["format"])
     else:
         for size in sizes:
             run_probe("generate", size, preferred_quality, preferred_format)
@@ -420,6 +461,72 @@ def probe_provider_capabilities(
         "matrix_complete": bool(full_matrix),
         "tests": tests,
     }
+
+
+def estimate_provider_capability_probe_total(candidates: Dict[str, List[str]], include_edit: bool = True, full_matrix: bool = False) -> int:
+    sizes = _clean_probe_values(candidates.get("sizes"), ["1024x1024"])
+    qualities = _clean_probe_values(candidates.get("qualities"), ["low"])
+    formats = _clean_probe_values(candidates.get("formats"), ["png"])
+    if full_matrix:
+        total = len(sizes) * len(qualities) * len(formats)
+    else:
+        total = len(sizes) + len(qualities) + len(formats)
+    if include_edit:
+        total += 1
+    return total
+
+
+def _build_probe_plan(
+    sizes: List[str],
+    qualities: List[str],
+    formats: List[str],
+    preferred_size: str,
+    preferred_quality: str,
+    preferred_format: str,
+    include_edit: bool,
+    full_matrix: bool,
+) -> List[Dict]:
+    plan = []
+    if full_matrix:
+        for size in sizes:
+            for quality in qualities:
+                for output_format in formats:
+                    plan.append({
+                        "mode": "generate",
+                        "size": size,
+                        "quality": quality,
+                        "format": output_format,
+                    })
+    else:
+        for size in sizes:
+            plan.append({
+                "mode": "generate",
+                "size": size,
+                "quality": preferred_quality,
+                "format": preferred_format,
+            })
+        for quality in qualities:
+            plan.append({
+                "mode": "generate",
+                "size": preferred_size,
+                "quality": quality,
+                "format": preferred_format,
+            })
+        for output_format in formats:
+            plan.append({
+                "mode": "generate",
+                "size": preferred_size,
+                "quality": preferred_quality,
+                "format": output_format,
+            })
+    if include_edit:
+        plan.append({
+            "mode": "edit",
+            "size": preferred_size,
+            "quality": preferred_quality,
+            "format": preferred_format,
+        })
+    return plan
 
 
 def _generate_single(routes: Dict, task: Dict) -> Dict:

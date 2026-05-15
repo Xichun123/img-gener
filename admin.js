@@ -19,6 +19,9 @@ const formatRawBtn = document.querySelector('#formatRawBtn');
 const testPanel = document.querySelector('#testPanel');
 const testResult = document.querySelector('#testResult');
 const testMeta = document.querySelector('#testMeta');
+const probeProgress = document.querySelector('#probeProgress');
+const probeProgressFill = document.querySelector('#probeProgressFill');
+const probeProgressText = document.querySelector('#probeProgressText');
 const closeTestBtn = document.querySelector('#closeTestBtn');
 const modelCardTemplate = document.querySelector('#modelCardTemplate');
 const providerCardTemplate = document.querySelector('#providerCardTemplate');
@@ -247,6 +250,7 @@ async function testProvider(modelIndex, providerIndex) {
   testPanel.hidden = false;
   testMeta.textContent = `模型 ${model.id} · provider ${provider.id} · 测试中...`;
   testResult.textContent = '';
+  resetProbeProgress(true);
   testPanel.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
   try {
     const payload = await api('/api/admin/test-provider', {
@@ -262,6 +266,7 @@ async function testProvider(modelIndex, providerIndex) {
     });
     testMeta.textContent = `模型 ${model.id} · provider ${provider.id} · ${payload.ok ? '成功' : '失败'} · ${payload.elapsed}s`;
     testResult.textContent = JSON.stringify(payload, null, 2);
+    resetProbeProgress(true);
     toast(payload.ok ? `测试成功（${payload.elapsed}s）` : `测试失败：${payload.error || '未知'}`, payload.ok ? 'ok' : 'error');
   } catch (error) {
     testMeta.textContent = `模型 ${model.id} · provider ${provider.id} · 错误`;
@@ -282,20 +287,19 @@ async function probeProvider(modelIndex, providerIndex) {
   testPanel.hidden = false;
   testMeta.textContent = `模型 ${model.id} · provider ${provider.id} · 能力探测中...`;
   testResult.textContent = '';
+  resetProbeProgress(false);
   testPanel.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
   try {
-    const payload = await api('/api/admin/probe-provider', {
-      method: 'POST',
-      body: JSON.stringify({
-        model_id: model.id,
-        provider,
-        sizes: PROBE_SIZES,
-        qualities: PROBE_QUALITIES,
-        formats: PROBE_FORMATS,
-        include_edit: true,
-        full_matrix: false,
-      }),
-    });
+    const payload = await streamProbeProvider({
+      model_id: model.id,
+      provider,
+      sizes: PROBE_SIZES,
+      qualities: PROBE_QUALITIES,
+      formats: PROBE_FORMATS,
+      include_edit: true,
+      full_matrix: false,
+      stream: true,
+    }, (event) => updateProbeProgress(event, model, provider));
     provider.capabilities = payload.capabilities;
     provider.supports_generate = payload.capabilities.supports_generate;
     provider.supports_edit = payload.capabilities.supports_edit;
@@ -303,12 +307,113 @@ async function probeProvider(modelIndex, providerIndex) {
     renderAll();
     testMeta.textContent = `模型 ${model.id} · provider ${provider.id} · 探测完成 · ${payload.elapsed}s`;
     testResult.textContent = JSON.stringify(payload, null, 2);
+    updateProbeProgress({ type: 'complete', ...payload }, model, provider);
     toast(payload.ok ? `能力探测完成（${payload.elapsed}s）` : '探测完成，但未发现可用文生图能力', payload.ok ? 'ok' : 'error');
   } catch (error) {
     testMeta.textContent = `模型 ${model.id} · provider ${provider.id} · 探测错误`;
     testResult.textContent = error.message;
+    probeProgressText.textContent = error.message;
     toast(`探测错误：${error.message}`, 'error');
   }
+}
+
+async function streamProbeProvider(body, onEvent) {
+  const response = await fetch('/api/admin/probe-provider', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${sessionToken}`,
+    },
+    body: JSON.stringify(body),
+  });
+  if (!response.ok) {
+    const text = await response.text();
+    let message = `HTTP ${response.status}`;
+    try { message = (text && JSON.parse(text).error) || message; } catch (_) {}
+    throw new Error(message);
+  }
+  if (!response.body) {
+    throw new Error('浏览器不支持流式进度。');
+  }
+
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = '';
+  let finalPayload = null;
+
+  while (true) {
+    const { value, done } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+    const lines = buffer.split('\n');
+    buffer = lines.pop() || '';
+    for (const line of lines) {
+      if (!line.trim()) continue;
+      const event = JSON.parse(line);
+      onEvent(event);
+      if (event.type === 'complete') finalPayload = event;
+      if (event.type === 'error') throw new Error(event.error || '能力探测失败');
+    }
+  }
+
+  buffer += decoder.decode();
+  if (buffer.trim()) {
+    const event = JSON.parse(buffer);
+    onEvent(event);
+    if (event.type === 'complete') finalPayload = event;
+    if (event.type === 'error') throw new Error(event.error || '能力探测失败');
+  }
+  if (!finalPayload) throw new Error('能力探测未返回完成事件。');
+  return finalPayload;
+}
+
+function resetProbeProgress(hidden) {
+  probeProgress.hidden = hidden;
+  probeProgressFill.style.width = '0%';
+  probeProgressText.textContent = '';
+}
+
+function updateProbeProgress(event, model, provider) {
+  probeProgress.hidden = false;
+  const total = Number(event.total || 0);
+  const completed = Number(event.completed || 0);
+  const percent = total ? Math.max(0, Math.min(100, Math.round((completed / total) * 100))) : 0;
+  if (event.type === 'start') {
+    probeProgressFill.style.width = '0%';
+    probeProgressText.textContent = `准备探测 0 / ${event.total}`;
+    testMeta.textContent = `模型 ${model.id} · provider ${provider.id} · 准备探测`;
+    return;
+  }
+  if (event.type === 'step_start') {
+    const current = formatProbeTarget(event.current);
+    probeProgressFill.style.width = `${percent}%`;
+    probeProgressText.textContent = `正在测试 ${completed + 1} / ${total} · ${current}`;
+    testMeta.textContent = `模型 ${model.id} · provider ${provider.id} · ${current}`;
+    appendProbeLog(`开始 · ${current}`);
+    return;
+  }
+  if (event.type === 'progress') {
+    const current = formatProbeTarget(event.current);
+    probeProgressFill.style.width = `${percent}%`;
+    probeProgressText.textContent = `已完成 ${completed} / ${total} · 成功 ${event.success_count || 0}`;
+    appendProbeLog(`${event.ok ? '成功' : '失败'} · ${current}${event.error ? ` · ${event.error}` : ''}`);
+    return;
+  }
+  if (event.type === 'complete') {
+    probeProgressFill.style.width = '100%';
+    probeProgressText.textContent = `探测完成 · ${event.elapsed}s`;
+  }
+}
+
+function appendProbeLog(line) {
+  testResult.textContent += `${line}\n`;
+  testResult.scrollTop = testResult.scrollHeight;
+}
+
+function formatProbeTarget(current) {
+  if (!current) return '未知项目';
+  const mode = current.mode === 'edit' ? '图生图' : '文生图';
+  return `${mode} · ${current.size} · ${current.quality} · ${current.format}`;
 }
 
 function applyRawJson() {

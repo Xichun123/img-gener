@@ -37,7 +37,10 @@ const lightboxClose = document.querySelector('.lightbox-close');
 
 const MAX_TOTAL_IMAGES = 6;
 const HISTORY_KEY = 'img-gener.history';
-const HISTORY_MAX = 20;
+const HISTORY_DB_NAME = 'img-gener-history';
+const HISTORY_DB_VERSION = 1;
+const HISTORY_STORE = 'entries';
+const HISTORY_MIGRATED_KEY = 'img-gener.history.migrated';
 const HISTORY_THUMB = 192;
 const ALLOWED_IMAGE_TYPES = new Set(['image/png', 'image/jpeg', 'image/webp']);
 let currentImages = [];
@@ -56,7 +59,7 @@ refreshKeyStatus();
 updateMode();
 loadPromptTemplates();
 applyPendingGalleryPrompt();
-renderHistory(loadHistory());
+initHistory();
 
 form.addEventListener('submit', async (event) => {
   event.preventDefault();
@@ -132,10 +135,11 @@ form.addEventListener('drop', (event) => {
   ingestImageFile(file, '已载入拖入的图片，已切换到图生图。');
 });
 
-historyClearBtn?.addEventListener('click', () => {
-  if (!loadHistory().length) return;
+historyClearBtn?.addEventListener('click', async () => {
+  const items = await loadHistory();
+  if (!items.length) return;
   if (!confirm('清空生成历史？此操作不可撤销。')) return;
-  saveHistory([]);
+  await saveHistory([]);
   renderHistory([]);
 });
 
@@ -796,7 +800,153 @@ function ingestImageFile(file, message) {
   setState(message || '已载入图片，已切换到图生图。', 'ok');
 }
 
-function loadHistory() {
+async function initHistory() {
+  try {
+    await migrateLegacyHistory();
+    renderHistory(await loadHistory());
+  } catch (error) {
+    console.warn('history init failed', error);
+    renderHistory(loadLegacyHistory());
+  }
+}
+
+function openHistoryDb() {
+  return new Promise((resolve, reject) => {
+    if (!('indexedDB' in window)) {
+      reject(new Error('IndexedDB unavailable'));
+      return;
+    }
+    const request = indexedDB.open(HISTORY_DB_NAME, HISTORY_DB_VERSION);
+    request.onupgradeneeded = () => {
+      const db = request.result;
+      if (!db.objectStoreNames.contains(HISTORY_STORE)) {
+        const store = db.createObjectStore(HISTORY_STORE, { keyPath: 'id' });
+        store.createIndex('createdAt', 'createdAt');
+      }
+    };
+    request.onsuccess = () => resolve(request.result);
+    request.onerror = () => reject(request.error || new Error('IndexedDB open failed'));
+  });
+}
+
+async function loadHistory() {
+  try {
+    const db = await openHistoryDb();
+    const items = await new Promise((resolve, reject) => {
+      const tx = db.transaction(HISTORY_STORE, 'readonly');
+      const store = tx.objectStore(HISTORY_STORE);
+      const request = store.getAll();
+      request.onsuccess = () => resolve(request.result || []);
+      request.onerror = () => reject(request.error || new Error('History read failed'));
+      tx.oncomplete = () => db.close();
+      tx.onerror = () => {
+        db.close();
+        reject(tx.error || new Error('History transaction failed'));
+      };
+    });
+    return items.sort((a, b) => String(b.createdAt || '').localeCompare(String(a.createdAt || '')));
+  } catch (error) {
+    console.warn('history db read failed', error);
+    return loadLegacyHistory();
+  }
+}
+
+async function saveHistory(items) {
+  try {
+    const db = await openHistoryDb();
+    await new Promise((resolve, reject) => {
+      const tx = db.transaction(HISTORY_STORE, 'readwrite');
+      const store = tx.objectStore(HISTORY_STORE);
+      store.clear();
+      items.forEach((item) => store.put(item));
+      tx.oncomplete = () => {
+        db.close();
+        resolve();
+      };
+      tx.onerror = () => {
+        db.close();
+        reject(tx.error || new Error('History transaction failed'));
+      };
+    });
+  } catch (error) {
+    console.warn('history db save failed', error);
+    saveLegacyHistory(items);
+  }
+}
+
+async function appendHistoryEntries(entries) {
+  try {
+    const db = await openHistoryDb();
+    await new Promise((resolve, reject) => {
+      const tx = db.transaction(HISTORY_STORE, 'readwrite');
+      const store = tx.objectStore(HISTORY_STORE);
+      entries.forEach((item) => store.put(item));
+      tx.oncomplete = () => {
+        db.close();
+        resolve();
+      };
+      tx.onerror = () => {
+        db.close();
+        reject(tx.error || new Error('History transaction failed'));
+      };
+    });
+  } catch (error) {
+    console.warn('history db append failed', error);
+    saveLegacyHistory([...entries, ...loadLegacyHistory()]);
+  }
+}
+
+async function findHistoryEntry(id) {
+  try {
+    const db = await openHistoryDb();
+    return await new Promise((resolve, reject) => {
+      const tx = db.transaction(HISTORY_STORE, 'readonly');
+      const store = tx.objectStore(HISTORY_STORE);
+      const request = store.get(id);
+      request.onsuccess = () => resolve(request.result || null);
+      request.onerror = () => reject(request.error || new Error('History lookup failed'));
+      tx.oncomplete = () => db.close();
+      tx.onerror = () => {
+        db.close();
+        reject(tx.error || new Error('History transaction failed'));
+      };
+    });
+  } catch (error) {
+    console.warn('history db lookup failed', error);
+    return loadLegacyHistory().find((item) => item.id === id) || null;
+  }
+}
+
+async function deleteHistoryEntryById(id) {
+  try {
+    const db = await openHistoryDb();
+    await new Promise((resolve, reject) => {
+      const tx = db.transaction(HISTORY_STORE, 'readwrite');
+      const store = tx.objectStore(HISTORY_STORE);
+      store.delete(id);
+      tx.oncomplete = () => {
+        db.close();
+        resolve();
+      };
+      tx.onerror = () => {
+        db.close();
+        reject(tx.error || new Error('History transaction failed'));
+      };
+    });
+  } catch (error) {
+    console.warn('history db delete failed', error);
+    saveLegacyHistory(loadLegacyHistory().filter((entry) => entry.id !== id));
+  }
+}
+
+async function migrateLegacyHistory() {
+  if (localStorage.getItem(HISTORY_MIGRATED_KEY) === '1') return;
+  const legacy = loadLegacyHistory();
+  if (legacy.length) await appendHistoryEntries(legacy);
+  localStorage.setItem(HISTORY_MIGRATED_KEY, '1');
+}
+
+function loadLegacyHistory() {
   try {
     const raw = JSON.parse(localStorage.getItem(HISTORY_KEY) || '[]');
     return Array.isArray(raw) ? raw : [];
@@ -805,17 +955,12 @@ function loadHistory() {
   }
 }
 
-function saveHistory(items) {
-  let toStore = items.slice(0, HISTORY_MAX);
-  while (toStore.length) {
-    try {
-      localStorage.setItem(HISTORY_KEY, JSON.stringify(toStore));
-      return;
-    } catch {
-      toStore = toStore.slice(0, Math.max(0, toStore.length - 3));
-    }
+function saveLegacyHistory(items) {
+  try {
+    localStorage.setItem(HISTORY_KEY, JSON.stringify(items));
+  } catch {
+    console.warn('legacy history save failed');
   }
-  try { localStorage.removeItem(HISTORY_KEY); } catch {}
 }
 
 async function addHistoryEntries(images) {
@@ -835,9 +980,8 @@ async function addHistoryEntries(images) {
       thumb: thumb || item.imageData,
     };
   }));
-  const next = [...entries, ...loadHistory()].slice(0, HISTORY_MAX);
-  saveHistory(next);
-  renderHistory(next);
+  await appendHistoryEntries(entries);
+  renderHistory(await loadHistory());
 }
 
 function makeThumb(dataUrl, size) {
@@ -872,7 +1016,7 @@ function renderHistory(items) {
     return;
   }
   historyPanel.classList.remove('hidden');
-  if (historyMeta) historyMeta.textContent = `${items.length} / ${HISTORY_MAX}（仅本机本浏览器）`;
+  if (historyMeta) historyMeta.textContent = `${items.length} 条（仅本机本浏览器）`;
   const fragment = document.createDocumentFragment();
   for (const entry of items) {
     const card = document.createElement('article');
@@ -904,22 +1048,21 @@ function renderHistory(items) {
   historyList.appendChild(fragment);
 }
 
-function deleteHistoryEntry(id) {
-  const next = loadHistory().filter((entry) => entry.id !== id);
-  saveHistory(next);
-  renderHistory(next);
+async function deleteHistoryEntry(id) {
+  await deleteHistoryEntryById(id);
+  renderHistory(await loadHistory());
 }
 
-function fillFromHistory(id) {
-  const entry = loadHistory().find((item) => item.id === id);
+async function fillFromHistory(id) {
+  const entry = await findHistoryEntry(id);
   if (!entry) return;
   promptInput.value = entry.prompt || '';
   promptInput.focus();
   setState('已填入历史提示词。', 'ok');
 }
 
-function useHistoryAsEdit(id) {
-  const entry = loadHistory().find((item) => item.id === id);
+async function useHistoryAsEdit(id) {
+  const entry = await findHistoryEntry(id);
   const source = entry?.imageData || entry?.thumb;
   if (!source) {
     setState('该历史条目没有可用的预览。', 'error');

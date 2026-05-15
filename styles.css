@@ -1693,6 +1693,20 @@ select:disabled, input:disabled, textarea:disabled {
   font-size: 11px;
   line-height: 1.2;
 }
+.quota-title {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+}
+.quota-title em {
+  color: var(--studio-teal);
+  font-style: normal;
+  font-weight: 600;
+  white-space: nowrap;
+}
+.quota-title em.is-empty {
+  color: var(--studio-primary);
+}
 .topbar-metric strong {
   display: flex;
   align-items: center;

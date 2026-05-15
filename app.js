@@ -1,5 +1,6 @@
 const form = document.querySelector('#generateForm');
 const siteKeyInput = document.querySelector('#siteKey');
+const quotaStatus = document.querySelector('#quotaStatus');
 const modeInput = document.querySelector('#mode');
 const modelChoices = document.querySelector('#modelChoices');
 const modelHint = document.querySelector('#modelHint');
@@ -39,6 +40,7 @@ let promptTemplates = [];
 let inlineEditSource = null;
 let generationTimer = null;
 let generationStartedAt = 0;
+let keyStatusTimer = null;
 let modelInputs = [];
 let modelProfiles = {};
 const savedSiteKey = localStorage.getItem('img-gener.site-key') || '';
@@ -83,6 +85,7 @@ siteKeyInput.addEventListener('change', refreshKeyStatus);
 siteKeyInput.addEventListener('blur', refreshKeyStatus);
 siteKeyInput.addEventListener('input', () => {
   localStorage.setItem('img-gener.site-key', siteKeyInput.value.trim());
+  scheduleKeyStatusRefresh();
 });
 sourceImageInput.addEventListener('change', () => {
   if (sourceImageInput.files?.[0]) clearInlineEditSource();
@@ -504,7 +507,35 @@ function formatElapsed(ms) {
 }
 
 function updateKeyStatus(siteKeyInfo) {
-  if (!siteKeyInfo) return;
+  if (!siteKeyInfo || !quotaStatus) return;
+  const remaining = Number(siteKeyInfo.remaining);
+  const limit = Number(siteKeyInfo.limit);
+  const used = Number(siteKeyInfo.used);
+  if (!Number.isFinite(remaining) || !Number.isFinite(limit)) {
+    clearKeyStatus();
+    return;
+  }
+  quotaStatus.textContent = `剩余 ${remaining} / ${limit}`;
+  quotaStatus.hidden = false;
+  quotaStatus.classList.toggle('is-empty', remaining <= 0);
+  quotaStatus.title = Number.isFinite(used) ? `已用 ${used}，总额度 ${limit}` : `总额度 ${limit}`;
+}
+
+function clearKeyStatus() {
+  if (!quotaStatus) return;
+  quotaStatus.textContent = '';
+  quotaStatus.hidden = true;
+  quotaStatus.classList.remove('is-empty');
+  quotaStatus.removeAttribute('title');
+}
+
+function scheduleKeyStatusRefresh() {
+  if (keyStatusTimer) clearTimeout(keyStatusTimer);
+  if (!siteKeyInput.value.trim()) {
+    clearKeyStatus();
+    return;
+  }
+  keyStatusTimer = setTimeout(refreshKeyStatus, 500);
 }
 
 function updateMode() {
@@ -592,7 +623,10 @@ function useImageForEdit(item) {
 
 async function refreshKeyStatus() {
   const siteKey = siteKeyInput.value.trim();
-  if (!siteKey) return;
+  if (!siteKey) {
+    clearKeyStatus();
+    return;
+  }
 
   try {
     const response = await fetch('/api/key-status', {
@@ -604,6 +638,7 @@ async function refreshKeyStatus() {
     if (!response.ok) throw new Error(payload.error || '查询失败');
     updateKeyStatus(payload);
   } catch (error) {
+    clearKeyStatus();
     console.warn('key status check failed', error);
   }
 }

@@ -317,6 +317,46 @@ async function probeProvider(modelIndex, providerIndex) {
   }
 }
 
+async function fetchProviderModels(modelIndex, providerIndex, node) {
+  const model = routes.models[modelIndex];
+  const provider = model?.providers?.[providerIndex];
+  if (!model || !provider) return;
+  if (typeof provider.api_key === 'string' && provider.api_key.startsWith('***')) {
+    toast('api_key 是脱敏值，请先保存配置再获取模型列表', 'error');
+    return;
+  }
+  const button = node.querySelector('[data-action="fetch-models"]');
+  const picker = node.querySelector('[data-role="model-picker"]');
+  if (!picker || !button) return;
+  button.disabled = true;
+  button.textContent = '获取中';
+  try {
+    const payload = await api('/api/admin/provider-models', {
+      method: 'POST',
+      body: JSON.stringify({ provider }),
+    });
+    renderModelPickerOptions(picker, payload.models || [], provider.upstream_model);
+    picker.hidden = false;
+    toast(`已获取 ${payload.models?.length || 0} 个模型`, 'ok');
+  } catch (error) {
+    toast(`获取模型失败：${error.message}`, 'error');
+  } finally {
+    button.disabled = false;
+    button.textContent = '获取';
+  }
+}
+
+function renderModelPickerOptions(picker, models, currentValue) {
+  picker.innerHTML = '<option value="">选择模型 id</option>';
+  models.forEach((modelId) => {
+    const option = document.createElement('option');
+    option.value = modelId;
+    option.textContent = modelId;
+    picker.append(option);
+  });
+  picker.value = models.includes(currentValue) ? currentValue : '';
+}
+
 async function streamProbeProvider(body, onEvent) {
   const response = await fetch('/api/admin/probe-provider', {
     method: 'POST',
@@ -529,6 +569,14 @@ function renderProviderCard(provider, modelIndex, providerIndex, model, modelNod
   bindCheckbox(node, 'supports_generate', provider, 'supports_generate');
   bindCheckbox(node, 'supports_edit', provider, 'supports_edit');
   renderProviderCapabilities(node, provider);
+  const picker = node.querySelector('[data-role="model-picker"]');
+  picker?.addEventListener('change', () => {
+    if (!picker.value) return;
+    provider.upstream_model = picker.value;
+    const input = node.querySelector('[data-field="upstream_model"]');
+    if (input) input.value = picker.value;
+    routesEditor.value = JSON.stringify(routes, null, 2);
+  });
 
   node.querySelector('[data-action="delete-provider"]').addEventListener('click', () => {
     if (!confirm(`确定删除 provider "${provider.id}"？`)) return;
@@ -541,6 +589,9 @@ function renderProviderCard(provider, modelIndex, providerIndex, model, modelNod
   });
   node.querySelector('[data-action="probe-provider"]').addEventListener('click', () => {
     probeProvider(modelIndex, providerIndex);
+  });
+  node.querySelector('[data-action="fetch-models"]').addEventListener('click', () => {
+    fetchProviderModels(modelIndex, providerIndex, node);
   });
   node.querySelector('[data-action="toggle-key"]').addEventListener('click', (event) => {
     const input = node.querySelector('[data-field="api_key"]');

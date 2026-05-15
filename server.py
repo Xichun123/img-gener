@@ -151,6 +151,9 @@ class Handler(http.server.BaseHTTPRequestHandler):
         if parsed.path == "/api/admin/probe-provider":
             self.handle_admin_probe_provider()
             return
+        if parsed.path == "/api/admin/provider-models":
+            self.handle_admin_provider_models()
+            return
         if parsed.path == "/api/admin/provider-health/reset":
             self.handle_admin_reset_provider_health()
             return
@@ -387,6 +390,33 @@ class Handler(http.server.BaseHTTPRequestHandler):
             "elapsed": round(monotonic() - started, 1),
             "provider_id": provider["id"],
             "capabilities": capabilities,
+        })
+
+    def handle_admin_provider_models(self):
+        if not self.require_admin():
+            return
+        body = self.read_json_body()
+        if body is None:
+            return
+        provider = body.get("provider")
+        if not isinstance(provider, dict):
+            self.send_json(400, {"error": "provider 配置缺失。"})
+            return
+        try:
+            provider = validate_provider(provider, allow_masked_key=False)
+            models = upstream_client.list_provider_models(provider)
+        except ValueError as error:
+            self.send_json(400, {"error": str(error)})
+            return
+        except upstream_client.UpstreamHTTPError as error:
+            self.send_json(502, {"error": f"获取模型列表失败：{error}"})
+            return
+        except Exception as error:
+            self.send_json(502, {"error": f"获取模型列表失败：{error}"})
+            return
+        self.send_json(200, {
+            "provider_id": provider["id"],
+            "models": models,
         })
 
     def stream_provider_probe(self, provider, model_id, candidates, include_edit, full_matrix, started):

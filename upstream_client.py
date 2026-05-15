@@ -123,6 +123,56 @@ class UpstreamClient:
             raise UpstreamHTTPError(message, error.code) from error
 
 
+def list_provider_models(provider: Dict, timeout: int = 60) -> List[str]:
+    protocol = provider.get("protocol", "openai_images")
+    base_url = str(provider.get("base_url") or "").rstrip("/")
+    api_key = str(provider.get("api_key") or "")
+    extra_headers = _provider_headers(provider) or {}
+
+    if protocol == "gemini_native":
+        url = f"{base_url}/v1beta/models"
+        headers = {**extra_headers, "x-goog-api-key": api_key, "Accept": "application/json"}
+    else:
+        url = f"{base_url}/v1/models"
+        headers = {**extra_headers, "Authorization": f"Bearer {api_key}", "Accept": "application/json"}
+
+    request = urllib.request.Request(url, headers=headers, method="GET")
+    try:
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            payload = json.loads(response.read().decode("utf-8"))
+    except urllib.error.HTTPError as error:
+        error_text = error.read().decode("utf-8", errors="replace")
+        try:
+            error_payload = json.loads(error_text)
+            message = _extract_error(error_payload) or f"HTTP {error.code}"
+        except json.JSONDecodeError:
+            message = error_text[:500] or f"HTTP {error.code}"
+        raise UpstreamHTTPError(message, error.code) from error
+
+    return _extract_model_ids(payload, protocol)
+
+
+def _extract_model_ids(payload: Dict, protocol: str) -> List[str]:
+    raw_items = payload.get("data")
+    if not isinstance(raw_items, list):
+        raw_items = payload.get("models")
+    if not isinstance(raw_items, list):
+        raw_items = []
+
+    models = []
+    for item in raw_items:
+        model_id = None
+        if isinstance(item, dict):
+            model_id = item.get("id") or item.get("name")
+        elif isinstance(item, str):
+            model_id = item
+        if protocol == "gemini_native" and isinstance(model_id, str):
+            model_id = model_id.removeprefix("models/")
+        if isinstance(model_id, str) and model_id.strip() and model_id.strip() not in models:
+            models.append(model_id.strip())
+    return models
+
+
 class OpenAIClient(UpstreamClient):
     """OpenAI protocol client."""
 

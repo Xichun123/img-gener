@@ -1436,6 +1436,17 @@ body.lightbox-open {
   gap: 6px;
 }
 .api-key-input input { flex: 1; }
+.model-picker-row {
+  display: flex;
+  gap: 6px;
+}
+.model-picker-row input {
+  flex: 1;
+  min-width: 0;
+}
+.provider-grid select[data-role="model-picker"] {
+  margin-top: 6px;
+}
 
 .admin-editor {
   min-height: 360px;

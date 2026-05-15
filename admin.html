@@ -182,7 +182,13 @@
         </label>
         <label>
           <span>upstream_model</span>
-          <input type="text" data-field="upstream_model" placeholder="上游真实模型 id">
+          <div class="model-picker-row">
+            <input type="text" data-field="upstream_model" placeholder="上游真实模型 id">
+            <button type="button" class="ghost-btn small-btn" data-action="fetch-models">获取</button>
+          </div>
+          <select data-role="model-picker" hidden>
+            <option value="">选择模型 id</option>
+          </select>
         </label>
         <label class="span-2">
           <span>base_url</span>

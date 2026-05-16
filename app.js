@@ -146,7 +146,8 @@ historyClearBtn?.addEventListener('click', async () => {
 historyList?.addEventListener('click', (event) => {
   const previewImage = event.target.closest('img[data-preview-src]');
   if (previewImage) {
-    openImageLightbox(previewImage.dataset.previewSrc, previewImage.dataset.previewCaption || previewImage.alt || '图片预览', previewImage.dataset.previewDownload || 'image.png');
+    const card = previewImage.closest('article[data-id]');
+    if (card) openHistoryLightbox(card.dataset.id);
     return;
   }
   const button = event.target.closest('button[data-action]');
@@ -402,6 +403,18 @@ function openImageLightbox(src, caption, fileName) {
   lightboxDownload.download = fileName || 'image.png';
   imageLightbox.hidden = false;
   document.body.classList.add('lightbox-open');
+}
+
+async function openHistoryLightbox(id) {
+  const entry = await findHistoryEntry(id);
+  if (!entry) return;
+  const src = entry.imageData || entry.thumb;
+  if (!src) {
+    setState('该历史条目没有可下载图片。', 'error');
+    return;
+  }
+  const fileName = `history-${entry.id.slice(0, 8)}.${entry.outputFormat || 'png'}`;
+  openImageLightbox(src, entry.model || '历史图片', fileName);
 }
 
 function closeImageLightbox() {
@@ -1024,10 +1037,9 @@ function renderHistory(items) {
     card.dataset.id = entry.id;
     const time = formatHistoryDate(entry.createdAt);
     const previewSrc = entry.thumb || entry.imageData || '';
-    const previewName = `history-${entry.id.slice(0, 8)}.${entry.outputFormat || 'png'}`;
     card.innerHTML = `
       <div class="history-card-thumb">
-        ${previewSrc ? `<img src="${escapeHtml(previewSrc)}" alt="${escapeHtml(entry.prompt || '')}" loading="lazy" data-preview-src="${escapeHtml(previewSrc)}" data-preview-caption="${escapeHtml(entry.model || '历史图片')}" data-preview-download="${escapeHtml(previewName)}">` : '<span class="history-card-missing">无预览</span>'}
+        ${previewSrc ? `<img src="${escapeHtml(previewSrc)}" alt="${escapeHtml(entry.prompt || '')}" loading="lazy" data-preview-src="${escapeHtml(previewSrc)}">` : '<span class="history-card-missing">无预览</span>'}
         <button type="button" class="history-card-delete" data-action="delete" aria-label="删除这一条">×</button>
       </div>
       <div class="history-card-body">
